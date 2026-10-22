@@ -12,7 +12,7 @@
 #include "ShardedSpinLock.h"
 
 
-Worker::Worker(unsigned int _ID, MultiThreadedTarjan& _algo, const Graph<Vid>& _graph, Dictionary<Vid, WeakReference<Cell<Vid>>>& _dict) : scheduler(_algo), dict(_dict), ID(_ID), MASK(std::uint64_t{1} << _ID), spareSearch(new Search), graph(_graph) {
+Worker::Worker(unsigned int _ID, MultiThreadedTarjan& _algo, const Graph<Vid>& _graph, Dictionary<Vid, WeakReference<Cell<Vid>>>& _dict) : scheduler(_algo), dict(_dict), ID(_ID), spareSearch(new Search), graph(_graph) {
     
     allocateSpareCell();
     recycledCells.reserve(10);
@@ -32,6 +32,7 @@ void Worker::operator()(){
         }
         
         execute(search);
+        scheduler.searchStopped(); //The search finished or suspended
         
     }
 }

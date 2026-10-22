@@ -59,64 +59,59 @@ SCC_Set* MultiThreadedTarjan::run()
 /*Called by worker threads to retrieve a search to execute. We first check the Pending queue 
  if any searches are ready to be resumed. If Pending is empty,
  we select a cell that hasn't been explored yet from the CellQueue to start a new search. If
- there are no more cells to explore, the thread pauses and contacts the termination protocal*/
+ there are no more cells to explore, the thread polls until either a search is resumed or
+ the termination protocol (see activeSearches) shows that no search can run again.
+ Returns nullptr when the worker should exit*/
 Search* MultiThreadedTarjan::getSearch(Worker* worker){
-    Search* search;
-    flags.store(0); //Can prob use relaxed mem order here
-    bool updateFlagsASAP(true); //Should we update flags next loop iteration
-    bool done(false);
-    const std::uint64_t mask(worker->MASK);
     
-    while(!done){
+    while(true){
 
-        //First, see if there is a pending Search we can resume
-        search = pending.get();
-        
-        if(search) return search;
+        //First, see if there is a pending Search we can resume. It was counted
+        //in activeSearches when it was added to Pending
+        if(Search* search = pending.get())
+            return search;
         
         //Otherwise, try to start new search by taking a cell off the Stealing queue
-        WeakReference<Cell<Vid>> root(cellQueue.next(worker));
-        
-        /* We try to find a potential root cell on the stealing queue.
-         * we need to try to conquer it before starting the search.
-         * Otherwise, we could be starting a search on a cell already
-         * in another search's stack! If the conquer suceeds, we can start the search
-         * otherwise we continue this loop
-         */
-        
-        
-        if(root.get()){
-            // The queue returns a weak, generation-tagged pointer. Another
-            // worker may complete and recycle it before we try to claim it.
-            Reference<Cell<Vid>> rootReference(root.get()->getReference(root.age));
-            if(rootReference && rootReference->claimOrFail(worker->spareSearch)){ //Found a viable root for the new search
-                worker->initNeighbors(rootReference.getPtr());
-
-                
-                search = worker->spareSearch;
-                search->setRoot(rootReference.getPtr());
-                worker->allocateSpareSearch();
-                return search;
-            }
-        }
+        if(!cellQueue.isEmpty()){
             
-         
-        
-        if(updateFlagsASAP)
-            flags|=mask;
-        
-        //Update flags next iteration if they were not updated this time and our flag is not set
-        updateFlagsASAP = (!updateFlagsASAP && ((flags.load() & mask) == 0));
-        
-        done = (flags.load() == ALL_FLAGS_SET);
-        
-        if(!done){
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
+            //Count ourselves before taking a root, so that no worker can see zero
+            //active searches while we hold the last root in hand
+            activeSearches.fetch_add(1);
+            
+            WeakReference<Cell<Vid>> root(cellQueue.next(worker));
+            
+            /* We try to find a potential root cell on the stealing queue.
+             * we need to try to conquer it before starting the search.
+             * Otherwise, we could be starting a search on a cell already
+             * in another search's stack! If the conquer suceeds, we can start the search
+             * otherwise we continue this loop
+             */
+            
+            if(root.get()){
+                // The queue returns a weak, generation-tagged pointer. Another
+                // worker may complete and recycle it before we try to claim it.
+                Reference<Cell<Vid>> rootReference(root.get()->getReference(root.age));
+                if(rootReference && rootReference->claimOrFail(worker->spareSearch)){ //Found a viable root for the new search
+                    worker->initNeighbors(rootReference.getPtr());
+                    
+                    Search* search = worker->spareSearch;
+                    search->setRoot(rootReference.getPtr());
+                    worker->allocateSpareSearch();
+                    return search;
+                }
+            }
+            
+            activeSearches.fetch_sub(1);
+            continue; //Another search claimed the root first; try the next one
         }
+        
+        //Every root has been handed out and nothing is running or waiting to run.
+        //Suspended searches can only be resumed by running ones, so we are done
+        if(activeSearches.load() == 0)
+            return nullptr;
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         
     }
-    
-    return nullptr;
     
 }

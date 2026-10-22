@@ -272,16 +272,16 @@ void differentialTests() {
 void threadBoundaryTests() {
     AdjacencyListGraph<Vid> empty;
     empty.updateVertexArray();
-    for (const auto invalidCount : {0U, 65U}) {
-        bool rejected = false;
-        try {
-            collect(Tarjan::multiThreadedTarjan(empty, invalidCount, Mutex_Dict));
-        } catch (const std::invalid_argument&) {
-            rejected = true;
-        }
-        require(rejected, "invalid worker count must be rejected before starting threads");
+    bool rejected = false;
+    try {
+        collect(Tarjan::multiThreadedTarjan(empty, 0, Mutex_Dict));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
     }
-    for (const auto threadCount : {1U, 63U, 64U}) {
+    require(rejected, "zero workers must be rejected before starting threads");
+    // The scheduler used to keep one bit per worker in a 64-bit word. Worker
+    // counts on and past that old boundary must terminate normally.
+    for (const auto threadCount : {1U, 63U, 64U, 65U, 128U}) {
         require(runSynchronized(empty, threadCount, false).empty(),
                 "empty graph returned components at thread-count boundary");
     }
@@ -290,8 +290,10 @@ void threadBoundaryTests() {
         cycle.insertEdge(vertex, (vertex + 1) % 256);
     }
     cycle.updateVertexArray();
-    require(runSynchronized(cycle, 64, false) == expectedPartition(cycle),
-            "64 workers produced an incorrect cycle partition");
+    for (const auto threadCount : {64U, 65U, 128U}) {
+        require(runSynchronized(cycle, threadCount, false) == expectedPartition(cycle),
+                std::to_string(threadCount) + " workers produced an incorrect cycle partition");
+    }
 }
 
 void contentionTests(bool isolateCore = false) {
@@ -323,12 +325,33 @@ void contentionTests(bool isolateCore = false) {
     }
 }
 
+// Small sparse graphs exhaust the roots almost at once, so most workers spend
+// the run idle while a few searches suspend and resume. That is the phase in
+// which the old termination flags could hang. Uses the default backend.
+void terminationTests() {
+    std::mt19937 generator(0x7E2A1AU);
+    for (unsigned round = 0; round < 60; ++round) {
+        constexpr Vid vertexCount = 1500;
+        AdjacencyListGraph<Vid> graph;
+        for (Vid vertex = 0; vertex < vertexCount; ++vertex) {
+            graph.insertVertex(vertex);
+        }
+        for (Vid edge = 0; edge < vertexCount; ++edge) {
+            graph.insertEdge(generator() % vertexCount, generator() % vertexCount);
+        }
+        graph.updateVertexArray();
+        const unsigned threadCount = std::vector<unsigned>{63, 96, 128}[round % 3];
+        require(collect(Tarjan::multiThreadedTarjan(graph, threadCount)) == expectedPartition(graph),
+                "termination round " + std::to_string(round) + " differs from the oracle");
+    }
+}
+
 } // namespace
 
 int main(int argumentCount, char** arguments) {
     try {
         require(argumentCount == 3 && std::string(arguments[1]) == "--case",
-                "usage: parallel_tarjan_tests --case graph|differential|thread-boundaries|contention|contention-locked");
+                "usage: parallel_tarjan_tests --case graph|differential|thread-boundaries|contention|contention-locked|termination");
         const std::string testCase = arguments[2];
         if (testCase == "graph") {
             graphTests();
@@ -340,6 +363,8 @@ int main(int argumentCount, char** arguments) {
             contentionTests();
         } else if (testCase == "contention-locked") {
             contentionTests(true);
+        } else if (testCase == "termination") {
+            terminationTests();
         } else {
             throw std::invalid_argument("unknown test case: " + testCase);
         }

@@ -16,9 +16,15 @@
 class OpenAddressedShardedMap   : public Dictionary<Vid, WeakReference<Cell<Vid>>>{
 private:
     
-    const static int BITS = 12;
-    const static int SHARDS = 2 << BITS;
-    OpenAddressedMap shard[SHARDS];
+    //key1 takes the low BITS bits of the hash and key2 the rest, so the two must not
+    //overlap: a shared bit would be constant within a shard and halve its usable slots
+    const static int BITS = 13;
+    const static int SHARDS = 1 << BITS;
+    
+    //Shards start small and grow on demand. With 2^11 slots each the table cost 256MB
+    //(zeroed) on every call, whatever the size of the graph
+    struct Shard : OpenAddressedMap { Shard() : OpenAddressedMap(4) {} };
+    Shard shard[SHARDS];
     
    
 public:

@@ -10,15 +10,15 @@
 int main(int argumentCount, char** arguments) {
     try {
         if (argumentCount > 2)
-            throw std::invalid_argument("Usage: parallel_tarjan_demo [workers: 1..64]");
+            throw std::invalid_argument("Usage: parallel_tarjan_demo [workers >= 1]");
 
         unsigned workerCount = 4;
         if (argumentCount == 2) {
             const std::string suppliedCount(arguments[1]);
             std::size_t consumedCharacters = 0;
             const auto parsedCount = std::stoul(suppliedCount, &consumedCharacters);
-            if (consumedCharacters != suppliedCount.size() || parsedCount < 1 || parsedCount > 64)
-                throw std::invalid_argument("Worker count must be between 1 and 64");
+            if (consumedCharacters != suppliedCount.size() || parsedCount < 1 || parsedCount > 4096)
+                throw std::invalid_argument("Worker count must be between 1 and 4096");
             workerCount = static_cast<unsigned>(parsedCount);
         }
 

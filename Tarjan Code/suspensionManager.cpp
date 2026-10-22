@@ -139,6 +139,12 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell<Vid>* con
     
     Search* Si(Sn); Cell<Vid>* Ci; Vid Li, Ai;
     
+    //The path can lead into a blocking cycle that does not contain Sn. That cycle is
+    //resolved by its own last suspender, but until then the walk below would go round
+    //it indefinitely, growing S, C, L and A. Brent's cycle detection spots a repeated
+    //search: remember the search at each power-of-two step and stop if we meet it again
+    Search* checkpoint(nullptr); std::size_t nextCheckpoint(1);
+    
     //is there already a blocking path from S1 to Sn?
     
     
@@ -168,8 +174,15 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell<Vid>* con
         if(Li & 1)
             return SUSPEND;
             
+        //Back at a search we already passed without meeting Sn: Sn is not on a cycle
+        if(Si == checkpoint)
+            return SUSPEND;
+        
         C.push_back(Ci); S.push_back(Si); L.push_back(Li); A.push_back(Ai);
         
+        if(S.size() == nextCheckpoint){
+            checkpoint = Si; nextCheckpoint *= 2;
+        }
         
     }while(Si != Sn);
     

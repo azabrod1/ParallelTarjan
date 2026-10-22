@@ -3,7 +3,22 @@ project(ParallelTarjan VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 include(CheckCXXSourceCompiles)
+include(FetchContent)
 find_package(Threads REQUIRED)
+
+# moodycamel::ConcurrentQueue (header-only) holds the searches waiting to be
+# resumed. It is fetched at a pinned release; to build offline, point
+# FETCHCONTENT_SOURCE_DIR_CONCURRENTQUEUE at a local checkout of that tag.
+FetchContent_Declare(concurrentqueue
+    URL https://github.com/cameron314/concurrentqueue/archive/refs/tags/v1.0.4.tar.gz
+    URL_HASH SHA256=87fbc9884d60d0d4bf3462c18f4c0ee0a9311d0519341cac7cbd361c885e5281
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    # Only the header is needed; skip the upstream build and install rules.
+    SOURCE_SUBDIR header-only
+)
+FetchContent_MakeAvailable(concurrentqueue)
+add_library(concurrentqueue INTERFACE)
+target_include_directories(concurrentqueue SYSTEM INTERFACE "${concurrentqueue_SOURCE_DIR}")
 
 option(PARALLEL_TARJAN_ENABLE_TBB "Enable the optional oneTBB dictionary" OFF)
 option(PARALLEL_TARJAN_BUILD_LEGACY_BENCHMARK "Build the historical benchmark with local dataset paths" OFF)
@@ -27,7 +42,7 @@ add_library(parallel_tarjan
 )
 target_include_directories(parallel_tarjan PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/Tarjan Code")
 target_compile_features(parallel_tarjan PUBLIC cxx_std_17)
-target_link_libraries(parallel_tarjan PUBLIC Threads::Threads)
+target_link_libraries(parallel_tarjan PUBLIC Threads::Threads concurrentqueue)
 
 add_executable(parallel_tarjan_demo examples/scc.cpp)
 target_link_libraries(parallel_tarjan_demo PRIVATE parallel_tarjan)
@@ -80,11 +95,11 @@ endif()
 if(BUILD_TESTING)
     add_executable(parallel_tarjan_tests tests/regression.cpp)
     target_link_libraries(parallel_tarjan_tests PRIVATE parallel_tarjan)
-    foreach(test_case graph differential thread-boundaries contention contention-locked)
+    foreach(test_case graph differential thread-boundaries contention contention-locked termination)
         add_test(NAME ${test_case} COMMAND parallel_tarjan_tests --case ${test_case})
         set_tests_properties(${test_case} PROPERTIES TIMEOUT 60)
     endforeach()
-    set_tests_properties(contention contention-locked PROPERTIES LABELS "stress")
+    set_tests_properties(contention contention-locked termination PROPERTIES LABELS "stress")
 
     add_executable(blocked_list_tests tests/blocked_list.cpp)
     target_link_libraries(blocked_list_tests PRIVATE parallel_tarjan)

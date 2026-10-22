@@ -37,6 +37,10 @@ line numbers.
 | Blocked-list publication is weaker than the wakeup proof requires | `blockedList.hpp:159,194`; `suspensionManager.cpp:342` | C++ memory-order analysis; no claimed native x86 reproduction | Put list publication and completion reads in the sequentially consistent order |
 | Mutex queue reads outside its mutex | `pending.hpp:58,72` | Unsynchronized `deque::empty()` concurrent with mutation | Lock every queue inspection |
 | Graph ownership and mutation errors | `AdjacencyListGraph.h:29-30,66-67,105,124-129,155-165` | Static inspection plus ownership/mutation regressions | Value-owned vertex storage, safe moved input, complete vertices, correct erase/shuffle ranges |
+| Termination waits for every worker to check in | `multiThreadedTarjan.cpp:59-114` | Ten hangs in about 900 stress runs on the 64-bit-mask fix: one worker stalled inside its 1 ms sleep while all others polled forever | Count active searches; idle workers no longer depend on each other |
+| A worker can leave the idle loop with its termination bit set | `multiThreadedTarjan.cpp:97-103` | Interleaving found by inspection; not reproduced | Removed with the flag protocol |
+| Cycle detection can walk round a foreign cycle indefinitely | `suspensionManager.cpp:151-173` | Code inspection; listed as open item 1 in the first revision of this audit | Brent's cycle check returns `SUSPEND` on a repeated search |
+| `OpenSharded` zeroes 256 MiB per call; shard and slot hashes share a bit | `openShardedMap.hpp:19-21,32-37` | 272 MB peak RSS for a 10-vertex graph; one constant low bit within every shard | 13-bit shard index without overlap; shards start at 16 slots |
 
 ### 1. The high-thread-count termination failure
 
@@ -56,9 +60,9 @@ was run with 64 workers under a 10-second timeout. It timed out. UBSan also
 reported the invalid shift. The repaired scheduler completes at both 63 and 64
 workers and rejects 0 and 65 workers before launching threads.
 
-The existing flag-reset protocol was not otherwise rewritten. The review did
-not establish a separate counterexample to that protocol with valid masks and
-correct work publication.
+The first revision of this patch kept the flag-reset protocol. A later stress
+campaign found that it still hangs with valid masks; see section 8. The flags
+have since been replaced, which also removes the 64-worker limit.
 
 ### 2. The missing generation postcheck
 
@@ -162,6 +166,12 @@ This is a direct ownership-order fix. The review established the schedule by
 inspection; unlike the generation check and table admission cases, no separate
 forced-schedule reproduction is claimed for this exact path.
 
+A later stress campaign of the original code on macOS (Apple M5 Max, 18 cores)
+returned 8 incorrect partitions in 28,000 random graphs at 32 to 63 workers.
+Each had exactly one duplicated and one missing vertex, which is what either
+this path or section 2's generation window produces. The patched code returned
+none in 27,600 graphs from the same campaign.
+
 ### 6. Blocked-list publication and wakeups
 
 The intended handshake is: publish the list entry, publish the search's blocked
@@ -208,6 +218,86 @@ vertex is removed, terminate edge removal, and use the correct shuffle end.
 The CSP importer now owns its input map locally and rejects malformed vertex
 prefixes rather than using an uninitialized vertex.
 
+### 8. Termination waited for every worker to check in
+
+The original protocol gives each worker one bit in a shared word. A worker
+entering `getSearch` clears every bit. An idle worker sets its own bit one
+polling round after it sees the bit cleared, and all workers exit once every
+bit is set. This has two weaknesses that remain after the mask repair.
+
+**Every worker must make progress.** A worker that is descheduled or stalled
+holds up termination for all of them. On macOS 27 with an Apple M5 Max (18
+cores), four concurrent stress processes, each running 48 or 63 workers on
+1,500 to 3,000-vertex random graphs, hung ten times in about 900 runs of 200
+graphs on the branch with only the mask repair. In each instrumented hang, 62
+workers had completed about 13,800 polling iterations while the missing bit's
+worker had completed two. Phase markers placed it inside
+`std::this_thread::sleep_for(1ms)` for the entire 20-second watchdog interval;
+three such processes stayed hung for between 3.5 and 10 minutes, until they
+were stopped. A 50-line program with no code from this project, which repeatedly
+starts 63 threads that each sleep for 1 ms, recorded one sleep longer than 1.2
+seconds under the same load. The stall originates outside this code, but the
+protocol turns one stalled idle thread into a hang of the whole run.
+
+**A worker can leave with a stale bit.** The bit is set after the empty checks,
+not atomically with them. If another worker enters `getSearch` and clears the
+word between a worker's checks and its `flags |= mask`, the bit is set without a
+fresh check. On its next iteration that worker can take a search while its bit
+remains set. If no other worker then enters `getSearch` while it runs, the idle
+workers observe every bit set and exit, and the remaining worker can never see
+every bit set again. This needs the clearing worker to be delayed for about one
+polling interval before its own first check, which oversubscription allows. It
+was found by inspection and has not been reproduced.
+
+The patch replaces the flags with `activeSearches`, the number of searches that
+are running or waiting in `Pending`, plus workers that are claiming a root.
+A search is counted before it is added to `Pending` and uncounted after its
+worker stops executing it, whether it finished or suspended. Suspended searches
+are not counted, since only a running search can complete the cell a suspended
+search waits on. A worker exits when the root queue is exhausted and the count
+is zero; at that point no search can become runnable again. Workers no longer
+need to observe each other. A claim that fails while roots remain is retried
+immediately rather than after a 1 ms sleep.
+
+The same stress campaign then ran 960 runs (192,000 graphs) at 48 and 63
+workers with no hang and no incorrect partition.
+
+Blocking idle workers on a condition variable instead of polling was also
+measured. It made small graphs about ten times faster, but a one-million-vertex
+graph with 16 workers took 669 ms instead of 295 ms, because every resumption
+then locked a mutex and woke a thread on the running search's critical path.
+Polling was kept.
+
+### 9. Cycle detection could walk round a foreign cycle
+
+The first pass of `suspend()` follows blocking edges from the new search until
+it returns to it or the path ends. If the path enters a blocking cycle that
+does not contain the new search, the walk goes round that cycle, appending to
+the path vectors, until the cycle's own last suspender resolves it. With a
+descheduled resolver that can be a long time.
+
+The walk now applies Brent's cycle detection: it remembers the search at each
+power-of-two step and returns `SUSPEND` if it meets that search again. In a
+consistent view, the path from a search that lies on a cycle returns to that
+search before it repeats any other, so a repeat proves the new search is not on
+the cycle. A repeat seen while the graph is changing is handled like the walk's
+other early returns, which also suspend on inconsistent observations. The last
+search to join a cycle sees a stable cycle and is not affected.
+
+### 10. The default dictionary's footprint and hash split
+
+`OpenSharded` used `SHARDS = 2 << 12` (8,192) shards with `key1 = hash & 8191`
+and `key2 = hash >> 12`. The two values share hash bit 12, so within a shard
+the low bit of `key2` is constant and linear probing initially used only half
+of the slots. Each shard also started with 2,048 entries: 256 MiB to allocate
+and zero per call. In the stress harness, a 10-vertex graph peaked at 272 MB of
+resident memory. The patch uses a 13-bit shard index and starts each shard at
+16 entries; the same run now peaks at 4.5 MB, and a one-million-vertex run
+(including the test oracle) at 547 MB rather than 723 MB. Medians on 200,000
+and 1,000,000-vertex graphs, measured together with section 8's change, are
+unchanged within noise; an 8-worker run on a 1,000-vertex graph fell from
+7.0 ms to 2.1 ms.
+
 ## Validation
 
 The baseline was preserved separately before production changes. Compatibility
@@ -237,6 +327,24 @@ final run had access to the required process metadata. Leak checking was not
 suppressed. Hosted Linux/macOS CI is configured separately from this local
 verification, and the elapsed times above are test timings, not benchmarks.
 
+A second validation ran on macOS 27 (Apple M5 Max, Apple clang 21, CMake 4.4)
+after the changes in sections 8 to 10:
+
+| Configuration | Result |
+| --- | --- |
+| RelWithDebInfo, all tests, 20 repeats with 6 in parallel | 10/10 passed |
+| AddressSanitizer + UndefinedBehaviorSanitizer, all tests, 10 parallel repeats | 10/10 passed |
+| ThreadSanitizer, all tests including the default queue | 10/10 passed, no reports |
+| Stress harness: 960 runs of 200 random graphs at 48 and 63 workers, four concurrent processes | No hang, no incorrect partition |
+
+LeakSanitizer is not available on that platform. Under heavy parallel load,
+ThreadSanitizer-instrumented test processes occasionally froze at 0% CPU with
+only 3 of their 33 threads created. This included the open-addressed dictionary
+test, which does not use the scheduler. One parallel ThreadSanitizer run of the
+termination test also timed out; it was not captured, and 60 further parallel
+ThreadSanitizer runs of that test passed. No such freeze occurred in
+uninstrumented or AddressSanitizer builds.
+
 ### ThreadSanitizer scope and unresolved queue report
 
 The `tsan-core` label covers the SCC core with `MutexDict` and
@@ -263,18 +371,11 @@ be a separate reviewed change.
 
 ## Remaining work and limits
 
-1. **Bound traversal of external suspension cycles.** The first pass stops when
-   it reaches its initiating search, an unsuspended search, a missing owner, or
-   a search currently transferring. A path from P into an already formed
-   A-to-B-to-A cycle can keep growing its path vectors until that cycle's
-   resolver runs. Under fair scheduling this is not independently proof of
-   permanent deadlock, but an oversubscribed or descheduled resolver can cause
-   wasted CPU and unbounded temporary growth. A generation-aware repeated-node
-   guard needs validation against the cycle-resolution proof.
-2. **Prove termination against the selected queue semantics.** The bundled
-   concurrent queue is not generally sequentially consistent. Its documented
-   empty-observation limitations must be considered explicitly. No failure is
-   attributed to `size_approx()`: the wrapper's `isDone()` method is unused.
+1. **Check the cycle-walk bound against the proof.** Section 9's repeated-search
+   check is argued above but has not been model-checked.
+2. **Model-check termination.** The active-search count does not rely on the
+   queue observing emptiness, since a search in `Pending` is always counted,
+   but the argument in section 8 has not been model-checked.
 3. **Define resource-failure behavior.** Exceptions in worker threads and
    partial thread creation are not yet converted into a cooperative error
    result. Adding `jthread` alone would not solve termination if fewer workers
@@ -289,16 +390,16 @@ be a separate reviewed change.
    checked overflow path. The default list capacity is 19,173,960 entries.
    These limits deserve explicit contracts before claiming general-purpose
    library support.
-6. **Benchmark before changing architecture.** `OpenSharded` preallocates about
-   256 MiB of entry storage on the tested 16-byte-entry platform. Sparse/lazy
-   shards, compact adjacency storage, value-owned SCCs, wakeups instead of
-   millisecond polling, and pool management are useful candidates. Measure
+6. **Benchmark before changing architecture.** Compact adjacency storage,
+   value-owned SCCs, wakeups instead of millisecond polling (see section 8 for
+   one measured regression), and pool management are useful candidates. Measure
    throughput, peak memory, and tail latency on disconnected, chain, giant-SCC,
    and clustered graphs. Keep the sequential implementation and simple locked
    backend as correctness/performance baselines.
-7. **Finish repository packaging.** Separate third-party headers from project
-   sources, record upstream versions and notices, choose an explicit project
-   license, and replace the local-path benchmark with a seeded CLI. Optional
+7. **Finish repository packaging.** The concurrent queue is now fetched at a
+   pinned upstream release; the libcuckoo headers used by the `Cuckoo` backend
+   are still vendored. Record upstream versions and notices, choose an explicit
+   project license, and replace the local-path benchmark with a seeded CLI. Optional
    TBB and all experimental backends need their own validation matrix before
    making broad portability claims.
 

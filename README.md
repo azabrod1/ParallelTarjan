@@ -13,8 +13,11 @@ the algorithm, proofs, measurements, acknowledgments, and references.
 ## Build and run
 
 Requirements: a C++17 compiler, CMake 3.20 or newer, and a platform thread library.
-The default build does not require TBB or download dependencies. CMake detects
-whether the experimental 16-byte atomic entries need `libatomic`.
+CMake downloads one header-only dependency, [moodycamel::ConcurrentQueue](https://github.com/cameron314/concurrentqueue)
+v1.0.4, pinned by SHA-256; to build offline, set
+`FETCHCONTENT_SOURCE_DIR_CONCURRENTQUEUE` to a local copy of that release.
+TBB is optional. CMake detects whether the experimental 16-byte atomic entries
+need `libatomic`.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -32,9 +35,9 @@ Strongly connected components (8 workers):
 {5}
 ```
 
-The demo accepts **1 to 64 worker threads**. This is also the supported range of
-the current library scheduler. The 64-thread boundary is handled explicitly;
-larger counts require a different termination representation.
+The demo and the library accept any positive number of worker threads. (The
+original scheduler kept one termination bit per worker in a 64-bit word, which
+capped it at 64 workers; it now counts active searches instead.)
 
 See [examples/scc.cpp](examples/scc.cpp) for graph construction, explicit backend
 selection, result ownership, and sorting the output for display.
@@ -67,10 +70,9 @@ Utility::deleteSCCs(components);
 research backends remain available through `DictType`. The historical API
 default remains `OpenSharded`, so existing benchmark calls retain their choice.
 
-`OpenSharded` eagerly creates 8,192 tables with 2,048 entries each. With 16-byte
-entries, that is about **256 MiB of entry storage before graph work starts**.
-Select a backend explicitly for small graphs. Reducing this footprint and
-measuring the tradeoff belongs in a separate benchmark change.
+`OpenSharded` creates 8,192 tables that start with 16 entries each (about
+2 MiB) and grow independently. They previously started with 2,048 entries,
+which zeroed about 256 MiB on every call regardless of graph size.
 
 The dissertation studies lock-free coordination, but an entire run is not
 unconditionally lock-free on every platform: the dictionary choice, allocator,
@@ -91,7 +93,7 @@ Requesting `TBB_Conc` without enabling it throws a descriptive exception.
 The regression suite checks full SCC membership against an independent,
 iterative Kosaraju implementation. It includes empty and disconnected graphs,
 self-loops, duplicate edges, directed bridges, a long chain, seeded random
-graphs, and simultaneous starts at 32 and 64 workers.
+graphs, and simultaneous starts at 32, 64, 65 and 128 workers.
 
 Dedicated tests cover the generation-check window during cell reuse, blocked
 list growth and reset, contended tiny-table resizing, and spin-lock publication
@@ -120,13 +122,16 @@ The `tsan-core` selection tests the SCC algorithm with `MutexDict` and
 open-addressed dictionary regressions. Release and AddressSanitizer run the
 complete suite, including the historical `LockFreePendingQueue`.
 
-The bundled concurrent queue produces a ThreadSanitizer report during the
-default-queue contention test. It uses atomic fences that GCC ThreadSanitizer
-warns it does not fully model; upstream has discussed a closely matching
-[report](https://github.com/cameron314/concurrentqueue/issues/146). This is an
-unresolved validation limitation, not a clean ThreadSanitizer result for the
-default configuration. No reports are suppressed. To investigate that path,
-run the ThreadSanitizer suite without the label filter.
+The previously vendored 2016 copy of the concurrent queue produced a GCC
+ThreadSanitizer report during the default-queue contention test. The queue
+uses atomic fences that GCC ThreadSanitizer warns it does not fully model;
+upstream has discussed a closely matching
+[report](https://github.com/cameron314/concurrentqueue/issues/146). The build
+now uses upstream v1.0.4. Clang ThreadSanitizer on macOS reported no races for
+the default configuration in local stress runs, but the GCC result has not been
+re-established, so the CI selection is unchanged. No reports are suppressed.
+To investigate that path, run the ThreadSanitizer suite without the label
+filter.
 
 Sanitizer coverage is useful evidence, not a proof of deadlock freedom. See
 [the concurrency audit](docs/concurrency-audit.md) for the demonstrated failures,

@@ -14,7 +14,7 @@
 #include "typedefs.h"
 #include <deque>
 //#include "tbb/concurrent_queue.h"
-#include "ConcurrentQueue.h"
+#include "concurrentqueue.h" //moodycamel::ConcurrentQueue, fetched by CMake
 
 class Pending{
     

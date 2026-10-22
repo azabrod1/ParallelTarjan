@@ -30,7 +30,6 @@ private:
     MultiThreadedTarjan& scheduler;
     Dictionary<Vid, WeakReference<Cell<Vid>>>& dict;
     const unsigned int ID;
-    const std::uint64_t MASK;
     std::vector<SCC*>  SCCs;
     SimpleClock sc;
     Search* spareSearch;
