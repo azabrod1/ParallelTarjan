@@ -337,9 +337,18 @@ public:
             recycle();
     }
     
-    inline Reference<Cell<Vid>> getReference(Vid expectedAge){
-        //Return an empty reference if the cell's age exceeds the expected age, as the cell is already complete
-        return this->age == expectedAge? refCounter.createReference() : Reference<Cell<Vid>>::EmptyReference();
+    inline Reference<Cell<V>> getReference(Vid expectedAge){
+        if(age.load(std::memory_order_acquire) != expectedAge)
+            return Reference<Cell<V>>::EmptyReference();
+
+        auto reference = refCounter.createReference();
+        // The cell may have completed and been reused between the first age
+        // check and the increment. Validate again while the reference pins it.
+        // This is the second check in dissertation Code 4.2, lines 22-24.
+        if(!reference || age.load(std::memory_order_acquire) != expectedAge)
+            return Reference<Cell<V>>::EmptyReference();
+
+        return reference;
     }
     
     

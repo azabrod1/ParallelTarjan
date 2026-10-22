@@ -10,6 +10,7 @@
 #define worker_hpp
 
 #include <stdio.h>
+#include <cstdint>
 #include "cell.h"
 #include "typedefs.h"
 #include "graph.h"
@@ -29,7 +30,7 @@ private:
     MultiThreadedTarjan& scheduler;
     Dictionary<Vid, WeakReference<Cell<Vid>>>& dict;
     const unsigned int ID;
-    const long MASK;
+    const std::uint64_t MASK;
     std::vector<SCC*>  SCCs;
     SimpleClock sc;
     Search* spareSearch;

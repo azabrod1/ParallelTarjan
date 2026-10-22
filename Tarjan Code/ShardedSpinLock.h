@@ -32,7 +32,7 @@ private:
         while(true){
             while(lockArray[key].load(std::memory_order_relaxed)){};
             bool f(false);
-            if(lockArray[key].compare_exchange_weak(f, true, std::memory_order_relaxed, std::memory_order_relaxed))
+            if(lockArray[key].compare_exchange_weak(f, true, std::memory_order_acquire, std::memory_order_relaxed))
                 return;
         }
         
@@ -41,7 +41,7 @@ private:
     inline bool tryLock(const int key){
         bool f(false);
 
-        return !lockArray[key].load(std::memory_order_relaxed) && lockArray[key].compare_exchange_weak(f, true, std::memory_order_relaxed, std::memory_order_relaxed);
+        return !lockArray[key].load(std::memory_order_relaxed) && lockArray[key].compare_exchange_weak(f, true, std::memory_order_acquire, std::memory_order_relaxed);
         
     
     }
@@ -49,9 +49,26 @@ private:
     
     inline void unlock(const int key){
         
-        lockArray[key].store(false, std::memory_order_relaxed);
+        lockArray[key].store(false, std::memory_order_release);
         
     }
+
+    // Ensure exceptions from allocation, hashing or lookup cannot leave a
+    // shard locked. The adopt-lock overload follows a successful tryLock().
+    class ShardLock {
+        ShardedSpinLock& owner;
+        const int shardIndex;
+    public:
+        ShardLock(ShardedSpinLock& owner, int shardIndex)
+            : owner(owner), shardIndex(shardIndex){
+            owner.lock(shardIndex);
+        }
+        ShardLock(ShardedSpinLock& owner, int shardIndex, std::adopt_lock_t)
+            : owner(owner), shardIndex(shardIndex){}
+        ~ShardLock(){ owner.unlock(shardIndex); }
+        ShardLock(const ShardLock&) = delete;
+        ShardLock& operator=(const ShardLock&) = delete;
+    };
     
 public:
     
@@ -64,13 +81,11 @@ public:
         K key2 = key >> BITS;
         
         
-        lock(key1);
+        ShardLock shardLock(*this, key1);
         
         auto val =  map[key1].insert(std::make_pair(key2, value));
         
-        unlock(key1);
-        
-        
+        // Copy the result while the iterator is still protected from rehash.
         return std::make_pair((val.first)->second, val.second);
         
     }
@@ -92,9 +107,11 @@ public:
                 Vid key2 = key >> BITS;
                 thread.spareCell->vertex = key;
                 if(tryLock(key1)){
-                    
-                    auto status = map[key1].insert(std::make_pair(key2, WeakReference<Cell<Vid>>(thread.spareCell, thread.spareCell->age)));
-                    unlock(key1);
+                    const auto status = [&]{
+                        ShardLock shardLock(*this, key1, std::adopt_lock);
+                        const auto insertion = map[key1].insert(std::make_pair(key2, WeakReference<Cell<Vid>>(thread.spareCell, thread.spareCell->age)));
+                        return std::make_pair(insertion.first->second, insertion.second);
+                    }();
                     
                     verts[v] = true; left--;
                     
@@ -102,8 +119,8 @@ public:
                         thread.allocateSpareCell();
 
                     
-                    Cell<Vid>* neighbor = (status.first)->second.get();
-                    int age = (status.first)->second.age;
+                    Cell<Vid>* neighbor = status.first.get();
+                    Vid age = status.first.age;
                     
                     
                     if(!neighbor->isComplete(age)) //If the neighbor is complete, no search has to visit it again
@@ -124,17 +141,17 @@ public:
             Vid key2 = key >> BITS;
             thread.spareCell->vertex = key;
             
-            lock(key1);
-            
-            auto status =  map[key1].insert(std::make_pair(key2,  WeakReference<Cell<Vid>>(thread.spareCell, thread.spareCell->age)));
-            
-            unlock(key1);
+            const auto status = [&]{
+                ShardLock shardLock(*this, key1);
+                const auto insertion = map[key1].insert(std::make_pair(key2, WeakReference<Cell<Vid>>(thread.spareCell, thread.spareCell->age)));
+                return std::make_pair(insertion.first->second, insertion.second);
+            }();
             
                 if(status.second)
                     thread.allocateSpareCell();
                 
-                Cell<Vid>* neighbor = (status.first)->second.get();
-                int age = (status.first)->second.age;
+                Cell<Vid>* neighbor = status.first.get();
+                Vid age = status.first.age;
                 
                 
                 if(!neighbor->isComplete(age)) //If the neighbor is complete, no search has to visit it again
@@ -191,13 +208,8 @@ public:
         K key1 = key & (LOCKS - 1);
         K key2 = key >> BITS;
         
-        lock(key1);
-        
-        auto& toReturn(map[key1].at(key2));
-        
-        unlock(key1);
-
-        return toReturn;
+        ShardLock shardLock(*this, key1);
+        return map[key1].at(key2);
         
     }
     
@@ -206,21 +218,18 @@ public:
         K key1 = key & (LOCKS - 1);
         K key2 = key >> BITS;
         
-        lock(key1);
-        
-        auto& toReturn(map[key1].at(key2));
-        
-        unlock(key1);
-        
-        return toReturn;
+        ShardLock shardLock(*this, key1);
+        return map[key1].at(key2);
     }
     
     unsigned long size(){
         
         unsigned long size(0);
         
-        for(int m = 0; m < LOCKS; ++ m)
-            size += map[m].size();
+        for(int shardIndex = 0; shardIndex < LOCKS; ++shardIndex){
+            ShardLock shardLock(*this, shardIndex);
+            size += map[shardIndex].size();
+        }
         
         return size;
         
@@ -230,9 +239,8 @@ public:
         K key1 = key & (LOCKS - 1);
         K key2 = key >> BITS;
         
-        lock(key1);
+        ShardLock shardLock(*this, key1);
         auto count(map[key1].count(key2));
-        unlock(key1);
         return count;
     }
     
@@ -243,11 +251,12 @@ public:
         
         std::unordered_map<K, V>* curr;
         
-        for(int m = 0; m < LOCKS; ++m){
-            curr = map + m;
+        for(int shardIndex = 0; shardIndex < LOCKS; ++shardIndex){
+            ShardLock shardLock(*this, shardIndex);
+            curr = map + shardIndex;
             
             for(auto& pair: *curr)
-                toReturn->push_back(pair.first);
+                toReturn->push_back((pair.first << BITS) | static_cast<K>(shardIndex));
             
         }
         
@@ -262,8 +271,9 @@ public:
         
         std::unordered_map<K, V>* curr;
         
-        for(int m = 0; m < LOCKS; ++m){
-            curr = map + m;
+        for(int shardIndex = 0; shardIndex < LOCKS; ++shardIndex){
+            ShardLock shardLock(*this, shardIndex);
+            curr = map + shardIndex;
             
             for(auto& pair: *curr)
                 toReturn->push_back(pair.second);

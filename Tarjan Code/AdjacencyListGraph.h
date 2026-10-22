@@ -11,8 +11,8 @@
 
 
 #include "graph.h"
+#include <algorithm>
 #include <unordered_map>
-#include "utilities.hpp"
 #include <random>       // std::default_random_engine
 #include "simpleClock.h"
 
@@ -21,13 +21,24 @@ class AdjacencyListGraph: public Graph<V>{
     
 private:
     std::unordered_map<V, std::vector<V> > edges;
-    V* vertexList;
+    // The legacy Graph interface returns a non-owning mutable array pointer.
+    // Owning the storage by value also makes copying a graph safe.
+    mutable std::vector<V> vertexList;
     
     
 public:
-    AdjacencyListGraph() : vertexList(nullptr){;}
-    AdjacencyListGraph(std::unordered_map<V, std::vector<V> >&& _edges) : edges(std::move(_edges)), vertexList(nullptr){
-        delete &_edges; updateVertexArray(); }
+    AdjacencyListGraph() = default;
+    AdjacencyListGraph(std::unordered_map<V, std::vector<V> >&& _edges) : edges(std::move(_edges)){
+        // A destination with no outgoing edges is still a vertex.
+        std::unordered_set<V> missingDestinations;
+        for(const auto& entry : edges)
+            for(const auto& destination : entry.second)
+                if(edges.find(destination) == edges.end())
+                    missingDestinations.insert(destination);
+        for(const auto& destination : missingDestinations)
+            edges.try_emplace(destination);
+        updateVertexArray();
+    }
     
     void insertVertex(V vertex);
     void insertEdge(V from, V to);
@@ -43,9 +54,7 @@ public:
     void updateVertexArray();
     bool hasVertex(V vertex) const {return edges.count(vertex) > 0;} ;
 
-    virtual ~AdjacencyListGraph(){
-        delete[] vertexList;
-    }
+    virtual ~AdjacencyListGraph() = default;
     
     virtual size_t numberEdges(){
         size_t toReturn{0};
@@ -63,14 +72,10 @@ public:
 template <class V>
 void AdjacencyListGraph<V>::updateVertexArray(){
     
-    if(vertexList) //delete the old list of verticies
-        delete vertexList;
-    
-    vertexList = new V[edges.size()];
-    
-    unsigned long v(0);
-    for(auto& vertex: edges)
-        vertexList[v++] = vertex.first;
+    vertexList.clear();
+    vertexList.reserve(edges.size());
+    for(const auto& vertex : edges)
+        vertexList.push_back(vertex.first);
     
     
 }
@@ -89,7 +94,7 @@ V* AdjacencyListGraph<V>::getVerticesArray(Vid& size) const{
     
     size = edges.size();
     
-    return vertexList;
+    return vertexList.data();
 }
 
 template<class V>
@@ -102,7 +107,7 @@ V* AdjacencyListGraph<V>::getVerticesArrayShuffled(Vid& size) const{
     for(auto& vertex: edges)
         vertices[v++] = vertex.first;
     unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-    std::shuffle(vertices, vertices+size-1,  std::default_random_engine(seed));
+    std::shuffle(vertices, vertices+size,  std::default_random_engine(seed));
     
     
     return vertices;
@@ -114,7 +119,8 @@ inline void AdjacencyListGraph<V>::insertVertex(V vertex){
     //Inserts the entry if it does not exist
     //The syntax is uncommon, but correct according to the documentation of unordered_map.
     //the below spawns can entry in the unordered map with vertex mapping to an empty vector
-    edges[vertex];
+    if(edges.try_emplace(vertex).second)
+        vertexList.push_back(vertex);
    
     
     
@@ -122,9 +128,8 @@ inline void AdjacencyListGraph<V>::insertVertex(V vertex){
 
 template<class V>
 inline void AdjacencyListGraph<V>::insertEdge(V from, V to){
-    if(!edges.count(from)) //If the vertex is not in the graph, add it
-        edges[from];
-    
+    insertVertex(from);
+    insertVertex(to);
     (edges[from]).push_back(to);
     
 }
@@ -149,20 +154,21 @@ std::unordered_set<V>* AdjacencyListGraph<V>::getVertices() const {
 template<class V>
 void AdjacencyListGraph<V>::removeVertex(V vertex){
     edges.erase(vertex);
+    vertexList.erase(std::remove(vertexList.begin(), vertexList.end(), vertex), vertexList.end());
+    for(auto& entry : edges){
+        auto& neighbors = entry.second;
+        neighbors.erase(std::remove(neighbors.begin(), neighbors.end(), vertex), neighbors.end());
+    }
 }
 
 template<class V>
 void AdjacencyListGraph<V>::removeEdge(V from, V to){
     
-    std::vector<V>& vect(edges[from]);
-    
-    auto it = vect.begin();
-    
-    while(it != vect.end()){
-        if(*it == to)
-            it = vect.erase(it);
-
-    }
+    auto source = edges.find(from);
+    if(source == edges.end())
+        return;
+    auto& neighbors = source->second;
+    neighbors.erase(std::remove(neighbors.begin(), neighbors.end(), to), neighbors.end());
 
 }
 

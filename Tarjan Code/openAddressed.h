@@ -10,6 +10,7 @@
 #define openAddressedSharded_h
 
 #include "dictionary.h"
+#include <thread>
 
 struct Entry{
     Entry(const Vid _key, const Vid _age, Cell<Vid>* const _cell ) noexcept : key(_key), age(_age), cell(_cell){;}
@@ -36,11 +37,21 @@ public:
     }
     
     virtual std::pair<WeakReference<Cell<Vid>>,bool> put(const Vid& key, const WeakReference<Cell<Vid>>& value){
+        // An arbitrary number of callers may pass the load-factor check before
+        // any insertion updates size. If they fill the table, release admission
+        // and retry so a resizer can proceed instead of probing forever.
+        for(;;){
         
         Vid currSize;
         do{
             
-            currSize = size.load(); if(!currSize) continue; //resize in progress
+            currSize = size.load();
+            if(!currSize){
+                // Yield while the exclusive resizing owner publishes its
+                // result, rather than waste CPU under oversubscription.
+                std::this_thread::yield();
+                continue;
+            }
             
             if(currSize*2 >= capacity){
                 if(!members && size.compare_exchange_weak(currSize, 0)){
@@ -64,7 +75,8 @@ public:
         
         Vid cap(capacity), location(getHash(key, cap));
         
-        while(true){
+        Vid probedSlots = 0;
+        while(probedSlots < cap){
             
             Entry curr = table[location].load();
             if(curr.cell){
@@ -75,7 +87,9 @@ public:
                     return std::make_pair<WeakReference<Cell<Vid>>,bool>(WeakReference<Cell<Vid>>(curr.cell, curr.age), false);
 
                     }
-                location = (location + 1) % cap; continue;
+                location = (location + 1) % cap;
+                ++probedSlots;
+                continue;
             }
             
         
@@ -85,7 +99,8 @@ public:
                  return std::make_pair<WeakReference<Cell<Vid>>,bool>(WeakReference<Cell<Vid>>(value.get(), value.age), true);
              }
         }
-    
+        --members;
+        }
     }
  
 

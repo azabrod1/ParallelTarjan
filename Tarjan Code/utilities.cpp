@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 
 std::random_device rd;
 
@@ -280,7 +281,7 @@ Graph<Vid>* Utility::importGraphFromCSP(std::string filename){
         return nullptr;
     }
     
-    auto graph = new std::unordered_map<Vid, std::vector<Vid>>;
+    std::unordered_map<Vid, std::vector<Vid>> graph;
     
     std::getline(file, line); //ignore the first line
     
@@ -290,20 +291,21 @@ Graph<Vid>* Utility::importGraphFromCSP(std::string filename){
     while(std::getline(file, line)){
         std::istringstream stream(line);
         
-        stream >> vertex  >> garbage;
+        if(line.find_first_not_of(" \t\r") == std::string::npos)
+            continue;
+        if(!(stream >> vertex >> garbage) || garbage != ':')
+            throw std::invalid_argument("Invalid CSP graph line: " + line);
         
-        std::vector<Vid>& neighbors = (*graph)[vertex];
+        std::vector<Vid>& neighbors = graph[vertex];
         
         
         while(stream >> neighbor)
             neighbors.push_back(neighbor);
         
 
-        graph->insert(std::make_pair(vertex, neighbors));
-
     }
     
-    return new AdjacencyListGraph<Vid>(std::move(*graph));
+    return new AdjacencyListGraph<Vid>(std::move(graph));
 }
 
 

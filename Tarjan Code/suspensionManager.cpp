@@ -7,6 +7,7 @@
 //
 
 #include "suspensionManager.hpp"
+#include <functional>
 
 
 /*
@@ -200,7 +201,9 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell<Vid>* con
         if(Ci->age != A[i])
             return SUSPEND;
         
-        if(Si < S[minPtr])
+        // std::less supplies a total order even for separately allocated
+        // searches; built-in relational pointer comparison does not.
+        if(std::less<Search*>{}(Si, S[minPtr]))
             minPtr = i;
         
         
@@ -339,7 +342,7 @@ void SuspensionManager::bulkUnsuspend(BlockedList<Search*>* const blockedList, C
     if(blockedList->isSmallList(size)){
         std::atomic<Search*>* const suspendedSearches{blockedList->getSmallBuffer()};
         for(int e = 0; e < size; ++e){
-            search = suspendedSearches[e].load(std::memory_order_relaxed);
+            search = suspendedSearches[e].load();
             if(search && search->removeCellBlockedOnWithCompareExchange(completeCell))
                 toResume.push_back(search);
         }

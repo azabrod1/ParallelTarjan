@@ -18,7 +18,7 @@ struct WeakReference{
     E*  subject;
     Vid age;
     
-    WeakReference() : age(0){}
+    WeakReference() : subject(nullptr), age(0){}
     
     WeakReference(E* const  _subject, const Vid _age) : subject(_subject), age(_age){}
     
@@ -52,7 +52,7 @@ struct WeakReference{
 
 template <class E>
 Reference<E> WeakReference<E>::getReference(){
-        return subject->refCounter.createReference();
+        return subject ? subject->getReference(age) : Reference<E>::EmptyReference();
     }
 
 

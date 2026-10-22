@@ -9,6 +9,9 @@
 #ifndef dictionary_h
 #define dictionary_h
 
+#include <utility>
+#include <vector>
+
 
 /** When a search encounters a vertex on the graph, it needs to check whether a Cell object has already
 been created to represent that vertex. If a cell object already exists for that node, we use this dictionary

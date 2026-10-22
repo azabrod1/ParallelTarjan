@@ -14,6 +14,8 @@
 #include <assert.h>     /* assert */
 #include <thread>
 #include <memory>
+#include <vector>
+#include <cstdint>
 #include "simpleClock.h"
 #include "blockedList.hpp"
 

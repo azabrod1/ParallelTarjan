@@ -12,7 +12,7 @@
 #include "ShardedSpinLock.h"
 
 
-Worker::Worker(unsigned int _ID, MultiThreadedTarjan& _algo, const Graph<Vid>& _graph, Dictionary<Vid, WeakReference<Cell<Vid>>>& _dict) : ID(_ID), MASK(1LL<<_ID), scheduler(_algo), graph(_graph), dict(_dict), spareSearch(new Search) {
+Worker::Worker(unsigned int _ID, MultiThreadedTarjan& _algo, const Graph<Vid>& _graph, Dictionary<Vid, WeakReference<Cell<Vid>>>& _dict) : scheduler(_algo), dict(_dict), ID(_ID), MASK(std::uint64_t{1} << _ID), spareSearch(new Search), graph(_graph) {
     
     allocateSpareCell();
     recycledCells.reserve(10);
@@ -28,7 +28,6 @@ void Worker::operator()(){
         
         search = scheduler.getSearch(this);
         if(!search){
-            cleanUp();
             return;
         }
         
@@ -177,8 +176,10 @@ void Worker::buildSCC(Search* const search, Cell<Vid>* const head){
     
     for(auto it = (rit+1).base(); it != tarjanStack->end(); ++it){
         scheduler.resumeAllBlockedOn(*it, S);
-        (*it)->permitRecycling();
         scc->push_back((*it)->vertex);
+        // A different thread can release the last reference and reuse this
+        // cell as soon as we drop the owner's reference.
+        (*it)->permitRecycling();
     }
     
     tarjanStack->erase((rit+1).base(), tarjanStack->end());
@@ -190,16 +191,16 @@ void Worker::buildSingletonSCC(Search* const search, Cell<Vid>* const cell){
     search->tarjanStackPop();
     cell->markComplete();
     scheduler.resumeAllBlockedOn(cell, S);
-    cell->permitRecycling();
     SCCs.push_back(new SCC{cell->vertex});
+    cell->permitRecycling();
     
 }
 
 void Worker::buildSoloSCC(Cell<Vid>* const cell){
     cell->markComplete();
     scheduler.resumeAllBlockedOn(cell, S);
-    cell->permitRecycling();
     SCCs.push_back(new SCC{cell->vertex});
+    cell->permitRecycling();
 } 
 
 void Worker::cleanUp(){

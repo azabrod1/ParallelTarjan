@@ -55,13 +55,11 @@ public:
     }
     
     Search* get(){
+        std::lock_guard<std::mutex> lock(mu);
         if(!waiting.empty()){
-            std::lock_guard<std::mutex> lock(mu);
-            if(!waiting.empty()){
-                Search* toReturn = waiting.front();
-                waiting.pop_front();
-                return toReturn;
-            }
+            Search* toReturn = waiting.front();
+            waiting.pop_front();
+            return toReturn;
         }
         
         return nullptr;
@@ -69,6 +67,7 @@ public:
     
     
     bool isDone(){
+        std::lock_guard<std::mutex> lock(mu);
         return waiting.empty();
     }
     

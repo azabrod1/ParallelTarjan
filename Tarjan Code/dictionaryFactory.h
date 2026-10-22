@@ -11,10 +11,16 @@
 #define DictionaryFactory_h
 
 #include "dictionary.h"
+#include "mutexDict.h"
+#include "SimpleSharded.h"
+#include "ShardedSpinLock.h"
 #include "openAddressed.h"
 #include "openShardedMap.hpp"
 #include "cuckooDict.h"
+#include <stdexcept>
+#ifdef PARALLEL_TARJAN_ENABLE_TBB
 #include "tbb_concurrent_map.h"
+#endif
 
 
 enum DictType {Mutex_Dict, Sharded_Locked, Sharded_SpinLock, TBB_Conc, OpenAddressed, OpenSharded, Cuckoo};
@@ -34,7 +40,11 @@ public:
             case Sharded_Locked:
                 return new ShardedMap<K, V>;
             case TBB_Conc:
+#ifdef PARALLEL_TARJAN_ENABLE_TBB
                 return new TBB_Concurrent_Map<K, V>;
+#else
+                throw std::invalid_argument("TBB backend requires PARALLEL_TARJAN_ENABLE_TBB");
+#endif
             case Sharded_SpinLock:
                 return new ShardedSpinLock<K, V>;
             case OpenAddressed:
@@ -44,7 +54,7 @@ public:
             case Cuckoo:
                 return new CuckooMap<K, V>;
             default:
-                return nullptr;
+                throw std::invalid_argument("Unknown dictionary backend");
         }
     }
 

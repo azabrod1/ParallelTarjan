@@ -32,7 +32,8 @@ public:
     static SCC_Set* multiThreadedTarjan(const Graph<Vid>& _graph, Vid num_threads = 4, DictType dType =  OpenSharded
                     ){
         
-        Dictionary<Vid, WeakReference<Cell<Vid>>>* dict = DictionaryFactory::getDictionary<Vid, WeakReference<Cell<Vid>>>(dType);
+        std::unique_ptr<Dictionary<Vid, WeakReference<Cell<Vid>>>> dict(
+            DictionaryFactory::getDictionary<Vid, WeakReference<Cell<Vid>>>(dType));
         
         LockFreePendingQueue pending;
         
@@ -43,8 +44,6 @@ public:
         MultiThreadedTarjan algorithm(_graph, *dict, num_threads, pending, freeCells);
         
         SCC_Set* toReturn = algorithm.run();
-        
-        delete dict;
         
         return toReturn;
     }

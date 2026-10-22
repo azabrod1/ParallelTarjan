@@ -34,8 +34,12 @@ SCC_Set* MultiThreadedTarjan::run()
     
     for(std::thread& thread: threads) thread.join();
     
-    for(Worker& worker: workers)
+    for(Worker& worker: workers){
         SCCs->insert(SCCs->end(), worker.SCCs.begin(), worker.SCCs.end());
+        // Weak cell/search pointers may still be inspected by another worker
+        // during shutdown. Keep the underlying storage alive until all join.
+        worker.cleanUp();
+    }
     
 //    using namespace std::chrono_literals;
 //
@@ -61,7 +65,7 @@ Search* MultiThreadedTarjan::getSearch(Worker* worker){
     flags.store(0); //Can prob use relaxed mem order here
     bool updateFlagsASAP(true); //Should we update flags next loop iteration
     bool done(false);
-    const long mask(worker->MASK);
+    const std::uint64_t mask(worker->MASK);
     
     while(!done){
 
@@ -81,16 +85,20 @@ Search* MultiThreadedTarjan::getSearch(Worker* worker){
          */
         
         
-        if(root.get())
-            if(root.get()->claimOrFail(worker->spareSearch)){ //Found a viable root for the new search
-                worker->initNeighbors(root.get());
+        if(root.get()){
+            // The queue returns a weak, generation-tagged pointer. Another
+            // worker may complete and recycle it before we try to claim it.
+            Reference<Cell<Vid>> rootReference(root.get()->getReference(root.age));
+            if(rootReference && rootReference->claimOrFail(worker->spareSearch)){ //Found a viable root for the new search
+                worker->initNeighbors(rootReference.getPtr());
 
                 
                 search = worker->spareSearch;
-                search->setRoot(root.get());
+                search->setRoot(rootReference.getPtr());
                 worker->allocateSpareSearch();
                 return search;
             }
+        }
             
          
         

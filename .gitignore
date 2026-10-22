@@ -1,0 +1,6 @@
+/build/
+/build-*/
+/CMakeUserPresets.json
+*.o
+*.a
+*.dSYM/

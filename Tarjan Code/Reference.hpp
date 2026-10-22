@@ -86,7 +86,9 @@ public:
         if(!refCount)
             return EMPTY_REFERENCE;
         
-        if(references.compare_exchange_weak(refCount, refCount + 1, std::memory_order_relaxed, std::memory_order_relaxed))
+        // Acquire the generation published before the new owner reference.
+        // A relaxed increment alone cannot publish a reused object's new age.
+        if(references.compare_exchange_weak(refCount, refCount + 1, std::memory_order_acquire, std::memory_order_relaxed))
             return Reference<E>(this); //Uses Return value optimization to avoid extra increment/decrement
         
         
@@ -98,7 +100,7 @@ public:
             if(!refCount)
                 return EMPTY_REFERENCE;
             
-            if(references.compare_exchange_weak(refCount, refCount + 1, std::memory_order_relaxed, std::memory_order_relaxed))
+            if(references.compare_exchange_weak(refCount, refCount + 1, std::memory_order_acquire, std::memory_order_relaxed))
                 return Reference<E>(this);
             
 

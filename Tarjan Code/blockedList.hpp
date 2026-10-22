@@ -156,7 +156,11 @@ public:
         //if index is less than base, we just insert the search in the correct location of firstBuffer
         if(idx < BASE){
      
-            firstBuffer[idx].store(item, std::memory_order_relaxed);
+            // Publication participates in the same sequentially consistent
+            // order as suspension and cell completion. A relaxed store can
+            // otherwise be missed by the completing thread even after the
+            // suspending thread has observed an incomplete cell.
+            firstBuffer[idx].store(item);
             
             return;
             
@@ -191,7 +195,7 @@ public:
                 delete[] newBuffer;
         }
         
-        buffers[buffer][pos].store(item, std::memory_order_relaxed); //Insert the item
+        buffers[buffer][pos].store(item); //Publish in the suspension/completion order.
     }
     
     

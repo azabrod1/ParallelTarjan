@@ -16,6 +16,9 @@
 #include "stealingQueue.hpp"
 #include "worker.hpp"
 #include "utilities.hpp"
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
 
 
 class MultiThreadedTarjan{
@@ -25,7 +28,17 @@ private:
     
     //Constants
     const unsigned int NUM_THREADS;
-    const uint64_t ALL_FLAGS_SET;
+    const std::uint64_t ALL_FLAGS_SET;
+
+    static std::uint64_t allWorkerFlags(unsigned int threadCount){
+        constexpr unsigned int maximumThreads =
+            std::numeric_limits<std::uint64_t>::digits;
+        if(threadCount == 0 || threadCount > maximumThreads)
+            throw std::invalid_argument("Parallel Tarjan supports 1 to 64 worker threads");
+        if(threadCount == maximumThreads)
+            return std::numeric_limits<std::uint64_t>::max();
+        return (std::uint64_t{1} << threadCount) - 1;
+    }
     
     //Data structures
     const Graph<Vid>& graph;
@@ -35,7 +48,7 @@ private:
     StealingQueue& cellQueue;
     
     //Member Variables
-    std::atomic<uint64_t> flags{0};
+    std::atomic<std::uint64_t> flags{0};
     
 public:
     
@@ -66,7 +79,7 @@ public:
     }
   
     
-    MultiThreadedTarjan(const Graph<Vid>& _graph, Dictionary<Vid, WeakReference<Cell<Vid>>>& _dict, unsigned int num_threads , Pending& _pending, StealingQueue& _queue) : graph(_graph), dict(_dict), NUM_THREADS(num_threads), ALL_FLAGS_SET((1LL << num_threads) - 1), pending(_pending), cellQueue(_queue){
+    MultiThreadedTarjan(const Graph<Vid>& _graph, Dictionary<Vid, WeakReference<Cell<Vid>>>& _dict, unsigned int num_threads , Pending& _pending, StealingQueue& _queue) : NUM_THREADS(num_threads), ALL_FLAGS_SET(allWorkerFlags(num_threads)), graph(_graph), dict(_dict), pending(_pending), cellQueue(_queue){
      ;
     }
    
