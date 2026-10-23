@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -176,8 +177,8 @@ private:
     std::size_t bucketCount = 1;
     std::vector<std::size_t> bucketCounts; //[thread * bucketCount + bucket], then positions
     std::vector<std::size_t> bucketStarts; //Where each bucket's edges start, plus the total
-    std::vector<Vertex> scatteredTargets;  //Edges grouped by bucket
-    std::vector<Vertex> scatteredSources;
+    std::vector<Vertex> scatteredTargets;  //Edges grouped by bucket; freed once the reverse
+    std::vector<Vertex> scatteredSources;  //graph is built, and the sources become `sources`
 
     BlockCounter blocks;
     moodycamel::ConcurrentQueue<Vertex> trimQueue;
@@ -187,7 +188,14 @@ private:
 
     std::vector<Vertex> frontier;
     std::vector<std::vector<Vertex>> nextFrontiers;
-    bool searchDone = false; //Written only in the last phase of a search level
+    //Whether a search is finished, as decided in the phase that advances the frontier on one
+    //thread and in the last phase of a parallel level. Each flag is written only in its own
+    //phase and read only after that phase's barrier, and a full barrier separates every
+    //read from the next write. One flag for both would not do: the one-thread phase
+    //directly follows the last parallel phase, so thread 0 could overwrite the flag while
+    //slower threads were still reading it
+    bool smallFrontierDone = false;
+    bool levelDone = false;
     std::vector<std::vector<Vertex>> giantParts;
     //Per thread: its remaining vertex of largest in-degree x out-degree, if it has one
     std::vector<std::optional<std::pair<std::uint64_t, Vertex>>> pivotCandidates;
@@ -274,7 +282,6 @@ private:
                 bucketStarts.assign(bucketCount + 1, 0);
                 scatteredTargets.resize(graph.edgeCount());
                 scatteredSources.resize(graph.edgeCount());
-                sources.resize(graph.edgeCount());
             }
         });
         phase([&] {
@@ -310,7 +317,11 @@ private:
                 }
         });
         phase([&] {
+            //Each bucket's edges already sit where its vertices' reverse edges belong, so
+            //sorting them by target within the bucket turns scatteredSources into the reverse
+            //graph's sources without a second edge-sized array
             std::vector<std::uint32_t> local;
+            std::vector<Vertex> sorted;
             std::size_t begin, end;
             while (blocks.take(begin, end, 1)) {
                 const std::size_t bucket = begin;
@@ -325,13 +336,24 @@ private:
                     position += local[i];
                     local[i] = 0;
                 }
-                for (std::size_t at = bucketStarts[bucket]; at < bucketStarts[bucket + 1]; ++at) {
+                const std::size_t bucketFirst = bucketStarts[bucket];
+                const std::size_t bucketLast = bucketStarts[bucket + 1];
+                sorted.resize(bucketLast - bucketFirst);
+                for (std::size_t at = bucketFirst; at < bucketLast; ++at) {
                     const std::size_t target = scatteredTargets[at];
-                    sources[inOffsets[target] + local[target - base]++] = scatteredSources[at];
+                    sorted[inOffsets[target] - bucketFirst + local[target - base]++] =
+                        scatteredSources[at];
                 }
+                std::copy(sorted.begin(), sorted.end(), scatteredSources.begin() + bucketFirst);
             }
             if (id == 0)
                 inOffsets[n] = graph.edgeCount();
+        });
+        phase([&] {
+            if (id != 0)
+                return;
+            sources = std::move(scatteredSources);
+            std::vector<Vertex>().swap(scatteredTargets);
         });
 
         // Trim, seeded by every vertex that already has no in- or out-edges.
@@ -433,6 +455,7 @@ private:
         std::vector<Vertex> stack(TAKE);
         auto& removed = trimmed[id];
 
+        int idlePolls = 0;
         while (!aborted.load(std::memory_order_relaxed)) {
             stack.resize(TAKE);
             const std::size_t taken = trimQueue.try_dequeue_bulk(consumer, stack.begin(), TAKE);
@@ -440,9 +463,15 @@ private:
             if (taken == 0) {
                 if (trimPending.load() == 0)
                     return;
-                std::this_thread::yield();
+                //A long cascade can keep one thread busy while the others have nothing:
+                //back off, so that with more threads than cores they do not take its time
+                if (++idlePolls < 64)
+                    std::this_thread::yield();
+                else
+                    std::this_thread::sleep_for(std::chrono::microseconds(50));
                 continue;
             }
+            idlePolls = 0;
             trimPending.fetch_add(1); //This thread now holds vertices
             trimPending.fetch_sub(static_cast<std::int64_t>(taken));
 
@@ -476,7 +505,27 @@ private:
     //visit(w) claims w and returns true at most once per vertex
     template <class Offsets, class Targets, class Visit>
     void search(unsigned id, const Offsets& edgeOffsets, const Targets& edgeTargets, Visit visit) {
+        //Below this many vertices one thread advances the frontier faster than all of them
+        //can meet at a barrier for every level. On a long path or cycle every level is
+        //small, and level-synchronous search alone would take one barrier round per vertex
+        constexpr std::size_t SMALL_FRONTIER = 4096;
         while (true) {
+            phase([&] {
+                if (id != 0)
+                    return;
+                std::vector<Vertex> next;
+                while (!frontier.empty() && frontier.size() < SMALL_FRONTIER) {
+                    next.clear();
+                    for (const Vertex u : frontier)
+                        for (std::size_t edge = edgeOffsets[u]; edge < edgeOffsets[u + 1]; ++edge)
+                            if (visit(edgeTargets[edge]))
+                                next.push_back(edgeTargets[edge]);
+                    frontier.swap(next);
+                }
+                smallFrontierDone = frontier.empty();
+            });
+            if (smallFrontierDone || stopped)
+                return;
             phase([&] {
                 if (id == 0)
                     blocks.reset(frontier.size());
@@ -499,13 +548,12 @@ private:
                 frontier.clear();
                 for (const auto& next : nextFrontiers)
                     frontier.insert(frontier.end(), next.begin(), next.end());
-                searchDone = frontier.empty();
+                levelDone = frontier.empty();
             });
             //Every thread reads the same decision after the barrier, so all leave together and
             //keep passing the same barriers. (Not frontier itself: once thread 0 has left, the
-            //next phase refills it while other threads may still be deciding.) The decision is
-            //next written two barriers later, after every thread has read it
-            if (searchDone || stopped)
+            //next phase refills it while other threads may still be deciding.)
+            if (levelDone || stopped)
                 return;
         }
     }

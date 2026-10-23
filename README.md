@@ -89,7 +89,8 @@ file, and checks every parallel result against the sequential one:
 The `csp:FILE` format reads the state-space graphs used in the dissertation.
 
 Median times at 16 threads on an 18-core Apple M5 Max (6 Super and 12
-Performance cores), for graphs of about four edges per vertex:
+Performance cores). The 1M-vertex graphs have about four edges per vertex, the
+10M-vertex graph six:
 
 | Graph | Sequential | Parallel Tarjan | Composed |
 | --- | --- | --- | --- |
@@ -104,7 +105,9 @@ Choose by the shape of the graph:
   searches work in separate parts of the graph.
 - **One giant component** (typical of web, social and citation graphs):
   `multistepScc`. It extracts the giant component with two parallel
-  breadth-first searches, which scale where depth-first search cannot.
+  breadth-first searches, which scale where depth-first search cannot. It
+  needs more memory: on the 10M-vertex graph (0.33 GB) its peak was 1.9 GB,
+  against 1.3 GB for `parallelScc`.
 - **Long chains of dependencies** (a deep DAG): neither beats the sequential
   algorithm here. Each search waits for the vertices ahead of it, and trimming
   can only peel the DAG from its ends.
@@ -126,7 +129,10 @@ cycle, and the termination count all use atomic operations that finish in a
 bounded number of steps. The pending-search queue is lock-free apart from
 memory allocation.
 
-The algorithm as a whole is not lock-free, as the dissertation notes
+`multistepScc` is not lock-free by design: its breadth-first phases wait for
+each other at barriers.
+
+The parallel search as a whole is not lock-free either, as the dissertation notes
 (section 1.2). Only the thread running a search can advance its depth-first
 search. While there are more searches than threads, a stalled thread holds up
 only the searches waiting on its vertices. Near the end of a run, the remaining

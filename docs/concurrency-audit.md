@@ -632,6 +632,32 @@ Two concurrency bugs were found in testing and fixed before measurement:
 A thread that fails to start now cancels the run at a start gate before any
 phase begins, so no thread can wait at a barrier for one that does not exist.
 
+Two changes came from running the tests as CI would, with more threads than
+cores. Nine concurrent AddressSanitizer test suites on the 18-core machine
+(about two cores each, like a hosted CI runner) timed out the differential test
+in every suite, at 120 seconds:
+
+- **Long paths and cycles.** Breadth-first search synchronized once per level,
+  and a 200,000-vertex cycle has 200,000 levels. One thread now advances any
+  frontier smaller than 4,096 vertices on its own; the threads meet at a
+  barrier per level only while the frontier is large. The differential test
+  fell from 1.95 s to 0.16 s in a release build.
+- **Idle trimming threads** yielded in a loop while one thread worked through a
+  long cascade, taking its time when cores were short. They now sleep for
+  50 µs at a time after 64 empty polls.
+
+With both changes all nine concurrent suites pass, the slowest test taking
+5.7 seconds. The benchmark times did not change.
+
+The one-thread frontier phase reintroduced the barrier-pairing bug, and the
+stress harness caught it: 3 of 4 processes hung on 100,000-vertex graphs at
+16 workers, with 15 threads at a barrier and the 16th gone. That phase directly
+followed the last parallel phase of a level, and both wrote the same stop flag,
+so thread 0 could overwrite it while slower threads were still reading it.
+Each decision now has its own flag. The rule the phases follow: a variable
+written in one phase and read after its barrier is not written again until
+every reader has passed a further barrier.
+
 Median times on the Apple M5 Max, the fastest of three passes taken minutes
 apart (the passes agreed within 3%). A batch counted only if other processes
 used under one core before and after it, and if its sequential run matched the
@@ -662,20 +688,34 @@ slower than this.
   (18.5 ms at 36 threads) where parallel Tarjan quadruples; its phases wait at
   barriers rather than on particular searches.
 
+**Memory.** The reverse graph and the per-vertex state of the breadth-first
+phases cost extra memory. On the 10M-vertex clustered graph (the graph itself
+takes 0.33 GB) the composed algorithm peaked at 1.9 GB, against 1.3 GB for
+parallel Tarjan in the same benchmark process. The edge scatter used to build the
+reverse graph is sorted in place bucket by bucket and freed before the Tarjan
+phase; before that change the peak was 2.1 GB.
+
 **Validation.** All 9 CTest cases pass in release, AddressSanitizer +
 UndefinedBehaviorSanitizer and ThreadSanitizer builds (the last with no
-reports). The stress harness ran the composed algorithm in two concurrent
-processes at 16 to 128 workers on 1,500 to 100,000-vertex random graphs: 400
-runs, 45,600 graph runs over 22,800 distinct graphs, with no hang and no wrong
-partition.
+reports), and in nine concurrent AddressSanitizer suites. The stress harness
+ran the composed algorithm in concurrent processes at 16 to 128 workers on
+1,500 to 100,000-vertex random graphs: before the one-thread frontier phase, 400
+runs (45,600 graph runs over 22,800 distinct graphs); on the final code, after
+fixing the bug that phase introduced, 240 runs (27,360 graph runs, each process
+with its own seeds). Neither found a hang or a wrong partition. The composed algorithm's own concurrency (the trim termination
+count, the phase barrier and the start gate) has been tested, run under
+ThreadSanitizer and stress-tested, but not model-checked; the TLA+ models cover
+only the engine it hands the remaining vertices to.
 
 ## Remaining work and limits
 
-1. **Smaller hot cells.** Moving the blocked-list pointer and the successor
-   cursor out of `Cell` would halve it to 16 bytes. From the padding
-   measurements above, that should save roughly 15% on large graphs. It
-   touches the suspension protocol's code paths, so it should be made with the
-   model and stress tests at hand.
+1. **Smaller hot cells.** Tried and not adopted. Moving the successor cursor
+   onto the control stack and the blocked-list pointer into a side array made
+   cells 16 bytes. In interleaved runs, that cut one-thread time on `random` by
+   24% but added 8% on `clusters` at one thread and 15% on `dag` at 16 threads,
+   where every completion then touches the side array. Prefetching the next
+   successor's cell added nothing measurable. A layout that wins on every
+   graph would need a different split of the hot and cold fields.
 2. **Choosing between the algorithms.** Neither algorithm wins on every graph,
    and the caller chooses. An automatic choice could start trimming and the
    forward search, and fall back to parallel Tarjan when the pivot's component
