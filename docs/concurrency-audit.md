@@ -663,7 +663,9 @@ apart (the passes agreed within 3%). A batch counted only if other processes
 used under one core before and after it, and if its sequential run matched the
 machine's normal speed: a first attempt straight after a long stress run,
 while background services were busy, measured parallel runs up to three times
-slower than this.
+slower than this. Every batch of the sweep is in
+[`docs/benchmarks/results.csv`](benchmarks/results.csv), and the README's
+charts are drawn from it.
 
 | Graph | Sequential | Parallel Tarjan, 16 threads | Hybrid, 16 threads | Hybrid, 1 thread |
 | --- | --- | --- | --- | --- |
