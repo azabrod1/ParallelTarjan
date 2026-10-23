@@ -54,7 +54,7 @@ endif()
 add_library(ptarjan
     src/components.cpp
     src/graph.cpp
-    src/multistep.cpp
+    src/hybrid.cpp
     src/sequential_tarjan.cpp
     src/parallel/parallel_tarjan.cpp
     src/parallel/search.cpp
@@ -86,11 +86,11 @@ if(BUILD_TESTING)
 
     add_executable(ptarjan_tests tests/scc_tests.cpp)
     target_link_libraries(ptarjan_tests PRIVATE ptarjan_internals ptarjan_warnings)
-    foreach(test_case api differential thread-boundaries contention contention-locked termination fan-in multistep)
+    foreach(test_case api differential thread-boundaries contention contention-locked termination fan-in hybrid)
         add_test(NAME ${test_case} COMMAND ptarjan_tests --case ${test_case})
         set_tests_properties(${test_case} PROPERTIES TIMEOUT 120)
     endforeach()
-    set_tests_properties(contention contention-locked termination fan-in multistep PROPERTIES LABELS "stress")
+    set_tests_properties(contention contention-locked termination fan-in hybrid PROPERTIES LABELS "stress")
 
     add_executable(blocked_list_tests tests/blocked_list.cpp)
     target_link_libraries(blocked_list_tests PRIVATE ptarjan_internals ptarjan_warnings)

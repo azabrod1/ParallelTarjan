@@ -152,8 +152,8 @@ void compareAlgorithms(const Graph& graph, unsigned threadCount, const std::stri
     requirePartition(ptarjan::sequentialScc(graph), graph, description + " (sequential)");
     requirePartition(ptarjan::parallelScc(graph, threadCount), graph,
                      description + " (" + std::to_string(threadCount) + " threads)");
-    requirePartition(ptarjan::multistepScc(graph, threadCount), graph,
-                     description + " (multistep, " + std::to_string(threadCount) + " threads)");
+    requirePartition(ptarjan::hybridScc(graph, threadCount), graph,
+                     description + " (hybrid, " + std::to_string(threadCount) + " threads)");
 }
 
 Graph randomGraph(Vertex vertexCount, std::size_t edgeCount, std::mt19937& generator) {
@@ -188,9 +188,9 @@ void apiTests() {
                                      "an adjacency list naming a missing vertex must be rejected");
     requireThrows<std::invalid_argument>([] { ptarjan::parallelScc(Graph(), 0); },
                                          "zero workers must be rejected before starting threads");
-    requireThrows<std::invalid_argument>([] { ptarjan::multistepScc(Graph(), 0); },
-                                         "multistep must reject zero workers");
-    require(ptarjan::multistepScc(empty, 4).empty(), "empty graph has multistep components");
+    requireThrows<std::invalid_argument>([] { ptarjan::hybridScc(Graph(), 0); },
+                                         "hybrid must reject zero workers");
+    require(ptarjan::hybridScc(empty, 4).empty(), "empty graph has hybrid components");
     require(ptarjan::defaultThreadCount() >= 1, "the default thread count must be positive");
 
     const Components components({4, 1, 3, 0, 2}, {0, 2, 3, 5});
@@ -320,11 +320,11 @@ void fanInTests() {
     }
 }
 
-// Shapes that exercise each multistep phase: graphs trimming finishes, a giant
+// Shapes that exercise each phase of the hybrid algorithm: graphs trimming finishes, a giant
 // component with trees hanging off both sides, and several components of similar size
 // so the forward-backward pivot takes only one of them. Many threads and repeats, since
 // the trim queue and the barriers are concurrency code of their own.
-void multistepTests() {
+void hybridTests() {
     std::mt19937 generator(0x3A57E9U);
     for (unsigned round = 0; round < 40; ++round) {
         const unsigned threadCount = std::vector<unsigned>{1, 2, 7, 16, 64}[round % 5];
@@ -372,8 +372,8 @@ void multistepTests() {
                                  static_cast<Vertex>(generator() % vertexCount)});
         }
         const Graph graph(vertexCount, edges);
-        requirePartition(ptarjan::multistepScc(graph, threadCount), graph,
-                         "multistep round " + std::to_string(round) + " with " +
+        requirePartition(ptarjan::hybridScc(graph, threadCount), graph,
+                         "hybrid round " + std::to_string(round) + " with " +
                              std::to_string(threadCount) + " threads");
     }
 }
@@ -386,7 +386,7 @@ int main(int argumentCount, char** arguments) {
             argumentCount == 3 && std::string(arguments[1]) == "--case",
             "usage: ptarjan_tests --case "
             "api|differential|thread-boundaries|contention|contention-locked|termination|fan-in|"
-            "multistep");
+            "hybrid");
         const std::string testCase = arguments[2];
         if (testCase == "api") {
             apiTests();
@@ -402,8 +402,8 @@ int main(int argumentCount, char** arguments) {
             terminationTests();
         } else if (testCase == "fan-in") {
             fanInTests();
-        } else if (testCase == "multistep") {
-            multistepTests();
+        } else if (testCase == "hybrid") {
+            hybridTests();
         } else {
             throw std::invalid_argument("unknown test case: " + testCase);
         }

@@ -27,7 +27,7 @@ unsigned defaultThreadCount() noexcept;
 Components parallelScc(const Graph& graph, unsigned threadCount = defaultThreadCount());
 
 /**
- * A composed algorithm for graphs with a giant component, where parallelScc
+ * A hybrid algorithm for graphs with a giant component, where parallelScc
  * cannot spread the work. Breadth-first parallel phases come first: trimming
  * removes vertices with no in- or out-edges among those remaining (repeatedly,
  * which finishes a DAG), and a forward-backward search from the vertex of
@@ -40,7 +40,7 @@ Components parallelScc(const Graph& graph, unsigned threadCount = defaultThreadC
  * threads synchronize once per level; small frontiers, as on long paths, are
  * advanced by one thread. Throws std::invalid_argument if threadCount is 0.
  */
-Components multistepScc(const Graph& graph, unsigned threadCount = defaultThreadCount());
+Components hybridScc(const Graph& graph, unsigned threadCount = defaultThreadCount());
 
 } // namespace ptarjan
 

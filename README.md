@@ -10,7 +10,7 @@ for the algorithm, its correctness argument, and the original measurements.
 
 Because of how it splits the work, the parallel search cannot speed up a graph
 with one giant component: every search that enters it is merged into one. For
-such graphs the library also has a composed algorithm that removes the giant
+such graphs the library also has a hybrid algorithm that removes the giant
 component first, using breadth-first parallel phases, and then runs the parallel
 search on what is left. A sequential, iterative Tarjan's algorithm is the
 baseline for the benchmarks and the reference in the tests.
@@ -52,13 +52,13 @@ const std::vector<ptarjan::Edge> edges{{0, 1}, {1, 0}, {1, 2}};
 const ptarjan::Graph graph(3, edges);
 
 ptarjan::Components components = ptarjan::parallelScc(graph, 8);
-// or multistepScc(graph, 8) for a graph with a giant component, or sequentialScc(graph)
+// or hybridScc(graph, 8) for a graph with a giant component, or sequentialScc(graph)
 for (std::span<const ptarjan::Vertex> component : components) {
     // ...
 }
 ```
 
-- `parallelScc(graph, threads)` and `multistepScc(graph, threads)` accept any
+- `parallelScc(graph, threads)` and `hybridScc(graph, threads)` accept any
   positive number of threads and default to the hardware concurrency. Which is
   faster depends on the graph; see Benchmarks.
 - `Components` owns its result: every component is a span into one shared
@@ -82,7 +82,7 @@ file, and checks every parallel result against the sequential one:
 ```sh
 ./build/ptarjan_bench --graph clusters --vertices 1000000 --threads 1,2,4,8,16 --runs 7
 ./build/ptarjan_bench --graph edges:soc-LiveJournal1.txt --threads 8   # SNAP edge list
-./build/ptarjan_bench --algorithms multistep --graph random --threads 16
+./build/ptarjan_bench --algorithms hybrid --graph random --threads 16
 ./build/ptarjan_bench --help
 ```
 
@@ -92,7 +92,7 @@ Median times at 16 threads on an 18-core Apple M5 Max (6 Super and 12
 Performance cores). The 1M-vertex graphs have about four edges per vertex, the
 10M-vertex graph six:
 
-| Graph | Sequential | Parallel Tarjan | Composed |
+| Graph | Sequential | Parallel Tarjan | Hybrid |
 | --- | --- | --- | --- |
 | `clusters`, 1M vertices: 15,625 components of 64 | 11.9 ms | **3.4 ms (3.4×)** | 7.8 ms (1.5×) |
 | `clusters`, 10M vertices: 10,000 components of 1,000 | 133 ms | **48.6 ms (2.7×)** | 113 ms (1.2×) |
@@ -104,7 +104,7 @@ Choose by the shape of the graph:
 - **Many medium-sized components** (clustered graphs): `parallelScc`. The
   searches work in separate parts of the graph.
 - **One giant component** (typical of web, social and citation graphs):
-  `multistepScc`. It extracts the giant component with two parallel
+  `hybridScc`. It extracts the giant component with two parallel
   breadth-first searches, which scale where depth-first search cannot. It
   needs more memory: on the 10M-vertex graph (0.33 GB) its peak was 1.9 GB,
   against 1.3 GB for `parallelScc`.
@@ -129,7 +129,7 @@ cycle, and the termination count all use atomic operations that finish in a
 bounded number of steps. The pending-search queue is lock-free apart from
 memory allocation.
 
-`multistepScc` is not lock-free by design: its breadth-first phases wait for
+`hybridScc` is not lock-free by design: its breadth-first phases wait for
 each other at barriers.
 
 The parallel search as a whole is not lock-free either, as the dissertation notes
@@ -157,7 +157,7 @@ Since then:
   hang when one idle thread was descheduled; see the audit, section 8.
 - **Correctness fixes.** Generation checks, publication order, a cycle walk
   that could loop, and several data races; see the audit.
-- **A composed algorithm** for graphs with a giant component (`multistepScc`):
+- **A hybrid algorithm** for graphs with a giant component (`hybridScc`):
   trimming and a forward-backward search first, then the parallel search on
   the rest.
 - **Root blocks.** Workers take blocks of up to 256 root vertices instead of
@@ -176,7 +176,7 @@ implementation. They cover empty graphs, self-loops, duplicate edges, long
 chains and cycles, seeded random graphs, 1 to 128 threads started
 simultaneously, synchronized contention, many searches suspended on one vertex,
 and long runs at 63 to 128 threads on small graphs, where termination problems
-show up. Every differential test also checks the composed algorithm, and its own
+show up. Every differential test also checks the hybrid algorithm, and its own
 test covers DAGs, giant components with trees on both sides, and equal-sized
 components at 1 to 64 threads. CTest applies timeouts so a hang is reported as a
 failure.

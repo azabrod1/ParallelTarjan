@@ -24,7 +24,7 @@ using namespace ptarjan;
 struct Options {
     bench::GraphSpec graph;
     std::vector<unsigned> threads{1, 2, 4, 8};
-    std::vector<std::string> algorithms{"parallel", "multistep"};
+    std::vector<std::string> algorithms{"parallel", "hybrid"};
     int runs = 5;
     int warmups = 1;
     bool verify = true;
@@ -41,7 +41,7 @@ struct Options {
            "  --cluster-size K      vertices per cluster for --graph clusters (default 64)\n"
            "  --seed S              generator seed (default 1)\n"
            "  --threads LIST        comma-separated worker counts (default 1,2,4,8)\n"
-           "  --algorithms LIST     parallel, multistep or both (default parallel,multistep)\n"
+           "  --algorithms LIST     parallel, hybrid or both (default parallel,hybrid)\n"
            "  --runs R              timed runs per configuration (default 5)\n"
            "  --warmups W           untimed runs first (default 1)\n"
            "  --no-verify           skip comparing each parallel result with the sequential one\n"
@@ -84,7 +84,7 @@ Options parseOptions(int argumentCount, char** arguments) {
             for (std::size_t start = 0; start <= list.size();) {
                 const std::size_t comma = std::min(list.find(',', start), list.size());
                 const std::string name = list.substr(start, comma - start);
-                if (name != "parallel" && name != "multistep")
+                if (name != "parallel" && name != "hybrid")
                     throw std::invalid_argument("unknown algorithm: " + name);
                 options.algorithms.push_back(name);
                 start = comma + 1;
@@ -199,8 +199,8 @@ int main(int argumentCount, char** arguments) {
                 const Timing timing = measure(
                     options,
                     [&] {
-                        return algorithm == "multistep" ? multistepScc(graph, threads)
-                                                        : parallelScc(graph, threads);
+                        return algorithm == "hybrid" ? hybridScc(graph, threads)
+                                                     : parallelScc(graph, threads);
                     },
                     options.verify ? &reference : nullptr);
                 report(algorithm.c_str(), threads, timing, sequential.median);

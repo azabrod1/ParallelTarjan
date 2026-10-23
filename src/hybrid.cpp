@@ -1,4 +1,4 @@
-// The composed ("multistep") algorithm: parallel phases that remove the parts of a graph
+// The hybrid algorithm: parallel phases that remove the parts of a graph
 // where depth-first search parallelizes badly, then the parallel Tarjan engine for the rest.
 //
 //  1. Trim: a vertex with no in-edges or no out-edges from the remaining vertices is a
@@ -95,9 +95,9 @@ private:
     std::atomic<std::uint32_t> generation{0};
 };
 
-class Multistep {
+class Hybrid {
 public:
-    Multistep(const Graph& graph, unsigned threadCount)
+    Hybrid(const Graph& graph, unsigned threadCount)
         : graph(graph), n(graph.vertexCount()), threadCount(threadCount),
           state(std::make_unique<std::atomic<std::uint8_t>[]>(n)),
           forward(std::make_unique<std::atomic<std::uint8_t>[]>(n)),
@@ -561,10 +561,10 @@ private:
 
 } // namespace
 
-Components multistepScc(const Graph& graph, unsigned threadCount) {
+Components hybridScc(const Graph& graph, unsigned threadCount) {
     if (threadCount == 0)
-        throw std::invalid_argument("multistepScc needs at least one worker thread");
-    Multistep algorithm(graph, threadCount);
+        throw std::invalid_argument("hybridScc needs at least one worker thread");
+    Hybrid algorithm(graph, threadCount);
     return algorithm.run();
 }
 

@@ -579,12 +579,12 @@ CAS, and others), and TLC catches every one. The bounds are small and the
 models check the protocols, not Tarjan's ranks; `spec/README.md` lists what
 they leave out.
 
-## 12. A composed algorithm for graphs with a giant component
+## 12. A hybrid algorithm for graphs with a giant component
 
 Parallel Tarjan cannot spread the work of one giant component: every search
-that enters it is merged into one. `multistepScc` (`src/multistep.cpp`)
+that enters it is merged into one. `hybridScc` (`src/hybrid.cpp`)
 handles such graphs with breadth-first phases first, in the style of the
-"Multistep" method from the parallel SCC literature:
+"Multistep" method of Slota, Rajamanickam and Madduri (IPDPS 2014):
 
 1. **Reverse graph**, built in parallel.
 2. **Trimming**: a vertex with no in-edges or no out-edges among the remaining
@@ -606,7 +606,7 @@ implementation problems surfaced while measuring it:
   atomic in-degree count and an atomic cursor per vertex took 29 of 48 ms on
   the random graph at 16 threads, slower than on one thread: every edge moved
   a cache line between cores. Bucketing each thread's edges by target range,
-  then building each bucket on one thread, needs no atomics; the composed run
+  then building each bucket on one thread, needs no atomics; the hybrid run
   fell from 47.5 ms to 19.6 ms.
 - **Trimming through one shared queue.** On `dag`, trimming got slower with
   threads (46 ms on 1, 60 ms on 16): the removal front is narrow, one thread
@@ -665,32 +665,32 @@ machine's normal speed: a first attempt straight after a long stress run,
 while background services were busy, measured parallel runs up to three times
 slower than this.
 
-| Graph | Sequential | Parallel Tarjan, 16 threads | Composed, 16 threads | Composed, 1 thread |
+| Graph | Sequential | Parallel Tarjan, 16 threads | Hybrid, 16 threads | Hybrid, 1 thread |
 | --- | --- | --- | --- | --- |
 | `clusters`, 1M vertices | 11.9 ms | 3.4 ms | 7.8 ms | 43.9 ms |
 | `clusters`, 10M vertices | 133 ms | 48.6 ms | 113 ms | 883 ms |
 | `random`, 1M vertices | 72.7 ms | 204 ms | 19.2 ms | 83.9 ms |
 | `dag`, 1M vertices | 15.9 ms | 30.0 ms | 17.8 ms | 43.7 ms |
 
-- **Giant component.** On `random` the composed algorithm is 3.8 times as fast
+- **Giant component.** On `random` the hybrid algorithm is 3.8 times as fast
   as the sequential algorithm at 16 threads (4.0 times at 18) and 10.6 times as
   fast as parallel Tarjan. On one thread it costs 1.15 times the sequential
   time: building the reverse graph and two breadth-first searches replace one
   depth-first search.
-- **Clustered graphs.** Parallel Tarjan stays the better choice. The composed
+- **Clustered graphs.** Parallel Tarjan stays the better choice. The hybrid
   algorithm builds the reverse graph and searches forward from a pivot through
   most of the graph, only to find one cluster.
-- **DAG.** Trimming removes every vertex, and from 8 threads on the composed
+- **DAG.** Trimming removes every vertex, and from 8 threads on the hybrid
   algorithm beats parallel Tarjan, but neither beats the sequential algorithm (the
-  composed algorithm reaches 0.92 times at 18 threads). The removal front of
+  hybrid algorithm reaches 0.92 times at 18 threads). The removal front of
   this DAG is narrow.
-- **More threads than cores.** The composed algorithm degrades gently on `dag`
+- **More threads than cores.** The hybrid algorithm degrades gently on `dag`
   (18.5 ms at 36 threads) where parallel Tarjan quadruples; its phases wait at
   barriers rather than on particular searches.
 
 **Memory.** The reverse graph and the per-vertex state of the breadth-first
 phases cost extra memory. On the 10M-vertex clustered graph (the graph itself
-takes 0.33 GB) the composed algorithm peaked at 1.9 GB, against 1.3 GB for
+takes 0.33 GB) the hybrid algorithm peaked at 1.9 GB, against 1.3 GB for
 parallel Tarjan in the same benchmark process. The edge scatter used to build the
 reverse graph is sorted in place bucket by bucket and freed before the Tarjan
 phase; before that change the peak was 2.1 GB.
@@ -698,11 +698,11 @@ phase; before that change the peak was 2.1 GB.
 **Validation.** All 9 CTest cases pass in release, AddressSanitizer +
 UndefinedBehaviorSanitizer and ThreadSanitizer builds (the last with no
 reports), and in nine concurrent AddressSanitizer suites. The stress harness
-ran the composed algorithm in concurrent processes at 16 to 128 workers on
+ran the hybrid algorithm in concurrent processes at 16 to 128 workers on
 1,500 to 100,000-vertex random graphs: before the one-thread frontier phase, 400
 runs (45,600 graph runs over 22,800 distinct graphs); on the final code, after
 fixing the bug that phase introduced, 240 runs (27,360 graph runs, each process
-with its own seeds). Neither found a hang or a wrong partition. The composed algorithm's own concurrency (the trim termination
+with its own seeds). Neither found a hang or a wrong partition. The hybrid algorithm's own concurrency (the trim termination
 count, the phase barrier and the start gate) has been tested, run under
 ThreadSanitizer and stress-tested, but not model-checked; the TLA+ models cover
 only the engine it hands the remaining vertices to.
@@ -720,7 +720,7 @@ only the engine it hands the remaining vertices to.
    and the caller chooses. An automatic choice could start trimming and the
    forward search, and fall back to parallel Tarjan when the pivot's component
    turns out small. Direction-optimizing breadth-first search would also cut
-   the composed algorithm's cost on dense frontiers.
+   the hybrid algorithm's cost on dense frontiers.
 3. **Idle waiting.** Workers yield for 200 µs, then poll every 1 ms.
    C++20 `atomic::wait` on the active-search count has not been measured.
 4. **Packaging.** There is no install or export rule yet; consume the library
