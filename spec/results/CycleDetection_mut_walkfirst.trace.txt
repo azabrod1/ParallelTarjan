@@ -1,0 +1,103 @@
+State 1 Initial
+    chk = <<0, 0>>
+    mp = <<1, 1>>
+    xcells = <<<<>>, <<>>>>
+    cur = <<1, 2>>
+    C = <<<<>>, <<>>>>
+    L = <<<<>>, <<>>>>
+    S = <<<<>>, <<>>>>
+    nchk = <<1, 1>>
+    cc = <<0, 0>>
+    snAge = <<0, 0>>
+    ci = <<0, 0>>
+    ct = <<0, 0>>
+    pc = <<"run", "run">>
+    xlast = <<0, 0>>
+    sdone = <<FALSE, FALSE>>
+    pending = {}
+    si = <<0, 0>>
+    cbo = <<0, 0>>
+    ix = <<0, 0>>
+    xdone = <<{}, {}>>
+    ccell = <<0, 0>>
+    stack = <<<<1, 2>>, <<3, 4>>>>
+    age = <<0, 0>>
+    xi = <<0, 0>>
+    owner = <<1, 1, 2, 2>>
+    budget = 3
+State 2 BeginSuspend
+    cc = <<3, 0>>
+    pc = <<"sa", "run">>
+    budget = 2
+State 3 LoadSnAge
+    pc = <<"p1a", "run">>
+    si = <<1, 0>>
+State 4 P1a
+    ci = <<3, 0>>
+    pc = <<"p1b", "run">>
+State 5 P1b
+    pc = <<"p1c", "run">>
+    si = <<2, 0>>
+State 6 P1c
+    chk = <<2, 0>>
+    C = <<<<3>>, <<>>>>
+    L = <<<<0>>, <<>>>>
+    S = <<<<2>>, <<>>>>
+    nchk = <<2, 1>>
+    pc = <<"p1a", "run">>
+    ix = <<1, 0>>
+State 7 P1a
+    chk = <<0, 0>>
+    C = <<<<>>, <<>>>>
+    L = <<<<>>, <<>>>>
+    S = <<<<>>, <<>>>>
+    nchk = <<1, 1>>
+    ci = <<0, 0>>
+    pc = <<"sb", "run">>
+    si = <<0, 0>>
+    ix = <<0, 0>>
+State 8 BeginSuspend
+    cc = <<3, 1>>
+    pc = <<"sb", "sa">>
+    budget = 1
+State 9 LoadSnAge
+    pc = <<"sb", "p1a">>
+    si = <<0, 2>>
+State 10 P1a
+    ci = <<0, 1>>
+    pc = <<"sb", "p1b">>
+State 11 P1b
+    pc = <<"sb", "p1c">>
+    si = <<0, 1>>
+State 12 P1c
+    chk = <<0, 1>>
+    C = <<<<>>, <<1>>>>
+    L = <<<<>>, <<0>>>>
+    S = <<<<>>, <<1>>>>
+    nchk = <<1, 2>>
+    pc = <<"sb", "p1a">>
+    ix = <<0, 1>>
+State 13 P1a
+    chk = <<0, 0>>
+    C = <<<<>>, <<>>>>
+    L = <<<<>>, <<>>>>
+    S = <<<<>>, <<>>>>
+    nchk = <<1, 1>>
+    ci = <<0, 0>>
+    pc = <<"sb", "sb">>
+    si = <<0, 0>>
+    ix = <<0, 0>>
+State 14 Publish
+    pc = <<"sc", "sb">>
+    cbo = <<3, 0>>
+State 15 Recheck
+    cur = <<0, 2>>
+    cc = <<0, 1>>
+    pc = <<"idle", "sb">>
+State 16 Publish
+    pc = <<"idle", "sc">>
+    cbo = <<3, 1>>
+State 17 Recheck
+    cur = <<0, 0>>
+    cc = <<0, 0>>
+    pc = <<"idle", "idle">>

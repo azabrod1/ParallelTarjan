@@ -1,0 +1,79 @@
+State 1 Initial
+    scanned = (c1 :> FALSE @@ c2 :> FALSE)
+    transfers = 0
+    widx = (w1 :> 0 @@ w2 :> 0)
+    ridx = 0
+    ktr = ({c1, c2} :> (s1 :> 0 @@ s2 :> 0))
+    lives = (s1 :> 0 @@ s2 :> 0)
+    pend = (s1 :> 0 @@ s2 :> 0)
+    rpc = "idle"
+    free = (s1 :> TRUE @@ s2 :> TRUE)
+    wcur = (w1 :> NULL @@ w2 :> NULL)
+    kcells = ({c1, c2} :> {c1, c2})
+    rc = NULL
+    rl = NULL
+    rs = NULL
+    wcell = (w1 :> NULL @@ w2 :> NULL)
+    lst = (c1 :> FALSE @@ c2 :> FALSE)
+    cbo = (s1 :> NULL @@ s2 :> NULL)
+    ent = (c1 :> (0 :> NULL @@ 1 :> NULL) @@ c2 :> (0 :> NULL @@ 1 :> NULL))
+    buf = {}
+    kleft = ({c1, c2} :> {c1, c2})
+    kpc = ({c1, c2} :> "idle")
+    ksize = ({c1, c2} :> 0)
+    status = (c1 :> "open" @@ c2 :> "open")
+    wpc = (w1 :> "idle" @@ w2 :> "idle")
+    kc = ({c1, c2} :> NULL)
+    ke = ({c1, c2} :> NULL)
+    ki = ({c1, c2} :> 0)
+    head = (c1 :> 0 @@ c2 :> 0)
+State 2 Start
+    lives = (s1 :> 0 @@ s2 :> 1)
+    free = (s1 :> TRUE @@ s2 :> FALSE)
+    wcur = (w1 :> s2 @@ w2 :> NULL)
+    wpc = (w1 :> "run" @@ w2 :> "idle")
+State 3 BeginSuspend
+    wcell = (w1 :> c1 @@ w2 :> NULL)
+    wpc = (w1 :> "lload" @@ w2 :> "idle")
+State 4 LLoad
+    wpc = (w1 :> "lcas" @@ w2 :> "idle")
+State 5 LCas
+    lst = (c1 :> TRUE @@ c2 :> FALSE)
+    wpc = (w1 :> "inc" @@ w2 :> "idle")
+State 6 Inc
+    wpc = (w1 :> "store" @@ w2 :> "idle")
+    head = (c1 :> 1 @@ c2 :> 0)
+State 7 Store
+    buf = {<<c1, 0, s2>>}
+    wpc = (w1 :> "setblk" @@ w2 :> "idle")
+State 8 SetBlk
+    cbo = (s1 :> NULL @@ s2 :> c1)
+    wpc = (w1 :> "check" @@ w2 :> "idle")
+State 9 Check
+    wcur = (w1 :> NULL @@ w2 :> NULL)
+    wcell = (w1 :> NULL @@ w2 :> NULL)
+    wpc = (w1 :> "idle" @@ w2 :> "idle")
+State 10 Mark
+    kleft = ({c1, c2} :> {c2})
+    status = (c1 :> "complete" @@ c2 :> "open")
+State 11 Mark
+    kleft = ({c1, c2} :> {})
+    kpc = ({c1, c2} :> "lptr")
+    status = (c1 :> "complete" @@ c2 :> "complete")
+    kc = ({c1, c2} :> c1)
+State 12 LPtr
+    kpc = ({c1, c2} :> "size1")
+State 13 Size1
+    kpc = ({c1, c2} :> "size2")
+State 14 Size2
+    kpc = ({c1, c2} :> "eload")
+    ksize = ({c1, c2} :> 1)
+State 15 ELoad
+    ki = ({c1, c2} :> 1)
+State 16 ELoad
+    kpc = ({c1, c2} :> "enq")
+State 17 Enq
+    scanned = (c1 :> TRUE @@ c2 :> FALSE)
+    kcells = ({c1, c2} :> {c2})
+    kpc = ({c1, c2} :> "lptr")
+    kc = ({c1, c2} :> c2)

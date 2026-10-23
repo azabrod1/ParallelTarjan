@@ -1,0 +1,87 @@
+State 1 Initial
+    hand = (w1 :> {} @@ w2 :> {} @@ w3 :> {})
+    active = 0
+    qIdx = 0
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    stalled = (w1 :> FALSE @@ w2 :> FALSE @@ w3 :> FALSE)
+    sst = <<"none", "none", "none">>
+    cur = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "pend" @@ w2 :> "pend" @@ w3 :> "pend")
+    pending = {}
+    waits = <<0, 0, 0>>
+    hk = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    budget = 3
+State 2 GetPendingNone
+    pc = (w1 :> "empty" @@ w2 :> "pend" @@ w3 :> "pend")
+State 3 IsEmpty
+    pc = (w1 :> "inc" @@ w2 :> "pend" @@ w3 :> "pend")
+State 4 Inc
+    active = 1
+    pc = (w1 :> "next" @@ w2 :> "pend" @@ w3 :> "pend")
+State 5 NextRoot
+    qIdx = 1
+    root = (w1 :> 1 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "claim" @@ w2 :> "pend" @@ w3 :> "pend")
+State 6 Claim
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    sst = <<"run", "none", "none">>
+    cur = (w1 :> 1 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "pend" @@ w3 :> "pend")
+State 7 GetPendingNone
+    pc = (w1 :> "exec" @@ w2 :> "empty" @@ w3 :> "pend")
+State 8 IsEmpty
+    pc = (w1 :> "exec" @@ w2 :> "inc" @@ w3 :> "pend")
+State 9 Inc
+    active = 2
+    pc = (w1 :> "exec" @@ w2 :> "next" @@ w3 :> "pend")
+State 10 NextRoot
+    qIdx = 2
+State 11 NextRoot
+    qIdx = 3
+    root = (w1 :> 0 @@ w2 :> 3 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "claim" @@ w3 :> "pend")
+State 12 Claim
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    sst = <<"run", "none", "run">>
+    cur = (w1 :> 1 @@ w2 :> 3 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "exec" @@ w3 :> "pend")
+State 13 Suspend
+    sst = <<"susp", "none", "run">>
+    cur = (w1 :> 0 @@ w2 :> 3 @@ w3 :> 0)
+    pc = (w1 :> "stop" @@ w2 :> "exec" @@ w3 :> "pend")
+    waits = <<3, 0, 0>>
+    budget = 2
+State 14 Stop
+    active = 1
+    pc = (w1 :> "pend" @@ w2 :> "exec" @@ w3 :> "pend")
+State 15 GetPendingNone
+    pc = (w1 :> "empty" @@ w2 :> "exec" @@ w3 :> "pend")
+State 16 IsEmpty
+    pc = (w1 :> "load" @@ w2 :> "exec" @@ w3 :> "pend")
+State 17 ResumeBlocked
+    hand = (w1 :> {} @@ w2 :> {1} @@ w3 :> {})
+    sst = <<"hand", "none", "run">>
+    pc = (w1 :> "load" @@ w2 :> "rs_enq" @@ w3 :> "pend")
+    waits = <<0, 0, 0>>
+    hk = (w1 :> 0 @@ w2 :> 1 @@ w3 :> 0)
+State 18 RsEnq
+    hand = (w1 :> {} @@ w2 :> {} @@ w3 :> {})
+    sst = <<"pend", "none", "run">>
+    pc = (w1 :> "load" @@ w2 :> "rs_inc" @@ w3 :> "pend")
+    pending = {1}
+State 19 GetPendingOk
+    sst = <<"run", "none", "run">>
+    cur = (w1 :> 0 @@ w2 :> 3 @@ w3 :> 1)
+    pc = (w1 :> "load" @@ w2 :> "rs_inc" @@ w3 :> "exec")
+    pending = {}
+State 20 Suspend
+    sst = <<"susp", "none", "run">>
+    cur = (w1 :> 0 @@ w2 :> 3 @@ w3 :> 0)
+    pc = (w1 :> "load" @@ w2 :> "rs_inc" @@ w3 :> "stop")
+    waits = <<3, 0, 0>>
+    budget = 1
+State 21 Stop
+    active = 0
+    pc = (w1 :> "load" @@ w2 :> "rs_inc" @@ w3 :> "pend")
+State 22 LoadActive
+    pc = (w1 :> "done" @@ w2 :> "rs_inc" @@ w3 :> "pend")

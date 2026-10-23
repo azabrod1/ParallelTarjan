@@ -1,0 +1,119 @@
+State 1 Initial
+    chk = <<0, 0, 0>>
+    mp = <<1, 1, 1>>
+    xcells = <<<<>>, <<>>, <<>>>>
+    cur = <<1, 2, 3>>
+    C = <<<<>>, <<>>, <<>>>>
+    L = <<<<>>, <<>>, <<>>>>
+    S = <<<<>>, <<>>, <<>>>>
+    nchk = <<1, 1, 1>>
+    cc = <<0, 0, 0>>
+    snAge = <<0, 0, 0>>
+    ci = <<0, 0, 0>>
+    ct = <<0, 0, 0>>
+    pc = <<"run", "run", "run">>
+    xlast = <<0, 0, 0>>
+    sdone = <<FALSE, FALSE, FALSE>>
+    pending = {}
+    si = <<0, 0, 0>>
+    cbo = <<0, 0, 0>>
+    ix = <<0, 0, 0>>
+    xdone = <<{}, {}, {}>>
+    ccell = <<0, 0, 0>>
+    stack = <<<<1, 2>>, <<3, 4>>, <<5, 6>>>>
+    age = <<0, 0, 0>>
+    xi = <<0, 0, 0>>
+    owner = <<1, 1, 2, 2, 3, 3>>
+    budget = 3
+State 2 BeginSuspend
+    cc = <<3, 0, 0>>
+    pc = <<"sa", "run", "run">>
+    budget = 2
+State 3 LoadSnAge
+    pc = <<"sb", "run", "run">>
+State 4 Publish
+    pc = <<"sc", "run", "run">>
+    cbo = <<3, 0, 0>>
+State 5 Recheck
+    pc = <<"p1a", "run", "run">>
+    si = <<1, 0, 0>>
+State 6 P1a
+    ci = <<3, 0, 0>>
+    pc = <<"p1b", "run", "run">>
+State 7 P1b
+    pc = <<"p1c", "run", "run">>
+    si = <<2, 0, 0>>
+State 8 P1c
+    chk = <<2, 0, 0>>
+    C = <<<<3>>, <<>>, <<>>>>
+    L = <<<<0>>, <<>>, <<>>>>
+    S = <<<<2>>, <<>>, <<>>>>
+    nchk = <<2, 1, 1>>
+    pc = <<"p1a", "run", "run">>
+    ix = <<1, 0, 0>>
+State 9 BeginSuspend
+    cc = <<3, 6, 0>>
+    pc = <<"p1a", "sa", "run">>
+    budget = 1
+State 10 LoadSnAge
+    pc = <<"p1a", "sb", "run">>
+State 11 Publish
+    pc = <<"p1a", "sc", "run">>
+    cbo = <<3, 6, 0>>
+State 12 P1a
+    ci = <<6, 0, 0>>
+    pc = <<"p1b", "sc", "run">>
+State 13 P1b
+    pc = <<"p1c", "sc", "run">>
+    si = <<3, 0, 0>>
+State 14 CompleteTop
+    ct = <<0, 0, 1>>
+    pc = <<"p1c", "sc", "cmp">>
+    ccell = <<0, 0, 6>>
+    stack = <<<<1, 2>>, <<3, 4>>, <<5>>>>
+    owner = <<1, 1, 2, 2, 3, 0>>
+State 15 P1c
+    chk = <<3, 0, 0>>
+    C = <<<<3, 6>>, <<>>, <<>>>>
+    L = <<<<0, 0>>, <<>>, <<>>>>
+    S = <<<<2, 3>>, <<>>, <<>>>>
+    nchk = <<4, 1, 1>>
+    pc = <<"p1a", "sc", "cmp">>
+State 16 Resume
+    ct = <<0, 0, 2>>
+State 17 Resume
+    ct = <<0, 0, 3>>
+    pending = {2}
+    cbo = <<3, 0, 0>>
+State 18 Resume
+    ct = <<0, 0, 4>>
+State 19 Resume
+    ct = <<0, 0, 0>>
+    pc = <<"p1a", "sc", "run">>
+    ccell = <<0, 0, 0>>
+State 20 BeginSuspend
+    cc = <<3, 6, 1>>
+    pc = <<"p1a", "sc", "sa">>
+    budget = 0
+State 21 LoadSnAge
+    pc = <<"p1a", "sc", "sb">>
+State 22 Publish
+    pc = <<"p1a", "sc", "sc">>
+    cbo = <<3, 0, 1>>
+State 23 P1a
+    ci = <<1, 0, 0>>
+    pc = <<"p1b", "sc", "sc">>
+State 24 P1b
+    pc = <<"p1c", "sc", "sc">>
+    si = <<1, 0, 0>>
+State 25 P1c
+    mp = <<3, 1, 1>>
+    C = <<<<3, 6, 1>>, <<>>, <<>>>>
+    L = <<<<0, 0, 0>>, <<>>, <<>>>>
+    S = <<<<2, 3, 1>>, <<>>, <<>>>>
+    pc = <<"fin", "sc", "sc">>
+State 26 Final
+    pc = <<"cas", "sc", "sc">>
+State 27 Consensus
+    pc = <<"rm", "sc", "sc">>
+    age = <<1, 0, 0>>
