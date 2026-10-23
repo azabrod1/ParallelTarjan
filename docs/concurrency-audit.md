@@ -267,7 +267,8 @@ is zero; at that point no search can become runnable again. Workers no longer
 need to observe each other. A claim that fails while roots remain is retried
 immediately rather than after a 1 ms sleep.
 
-The same stress campaign then ran 960 runs (192,000 graphs) at 48 and 63
+The same stress campaign then ran 960 runs (192,000 graph runs; the four
+concurrent processes used the same seeds, so 48,000 distinct graphs) at 48 and 63
 workers with no hang and no incorrect partition.
 
 Blocking idle workers on a condition variable instead of polling was also
@@ -343,7 +344,7 @@ after the changes in sections 8 to 10:
 | RelWithDebInfo, all tests, 20 repeats with 6 in parallel | 10/10 passed |
 | AddressSanitizer + UndefinedBehaviorSanitizer, all tests, 10 parallel repeats | 10/10 passed |
 | ThreadSanitizer, all tests including the default queue | 10/10 passed, no reports |
-| Stress harness: 960 runs of 200 random graphs at 48 and 63 workers, four concurrent processes | No hang, no incorrect partition |
+| Stress harness: 960 runs of 200 random graphs at 48 and 63 workers, four concurrent processes (48,000 distinct graphs, each run four times) | No hang, no incorrect partition |
 
 LeakSanitizer is not available on that platform. Under heavy parallel load,
 ThreadSanitizer-instrumented test processes occasionally froze at 0% CPU with
@@ -536,8 +537,8 @@ macOS 27, Apple M5 Max, Apple clang 21:
 | AddressSanitizer + UndefinedBehaviorSanitizer, all tests | Passed |
 | ThreadSanitizer, all tests including the lock-free queue | Passed, no reports |
 | clang-tidy with `.clang-tidy` on library, benchmark and demo | No warnings |
-| Stress harness, final revision: four concurrent processes, 16 to 128 workers, 1,500 to 100,000 vertices | 640 runs, 93,600 graphs: no hang, no wrong partition |
-| Stress harness, an earlier revision with the same scheduler: four concurrent processes, 16 to 128 workers | 1,280 runs, 187,200 graphs: no hang, no wrong partition |
+| Stress harness, final revision: four concurrent processes, 16 to 128 workers, 1,500 to 100,000 vertices | 640 runs, 93,600 graph runs (46,800 distinct graphs, each run twice at once): no hang, no wrong partition |
+| Stress harness, an earlier revision with the same scheduler: four concurrent processes, 16 to 128 workers | 1,280 runs, 187,200 graph runs (46,800 distinct graphs): no hang, no wrong partition |
 
 Every stress run checks the partition against a Kosaraju oracle under a
 20- or 30-second watchdog. The earlier revision differs only in joining threads through
@@ -578,6 +579,96 @@ CAS, and others), and TLC catches every one. The bounds are small and the
 models check the protocols, not Tarjan's ranks; `spec/README.md` lists what
 they leave out.
 
+## 12. A composed algorithm for graphs with a giant component
+
+Parallel Tarjan cannot spread the work of one giant component: every search
+that enters it is merged into one. `multistepScc` (`src/multistep.cpp`)
+handles such graphs with breadth-first phases first, in the style of the
+"Multistep" method from the parallel SCC literature:
+
+1. **Reverse graph**, built in parallel.
+2. **Trimming**: a vertex with no in-edges or no out-edges among the remaining
+   vertices is a component by itself. Removing it can expose others, so
+   trimming continues until none is left; on a DAG it removes everything.
+3. **Forward-backward**: the vertices both reachable from and reaching a pivot
+   form the pivot's component. The pivot is the remaining vertex with the
+   largest in-degree times out-degree, which on graphs with a giant component
+   lands in it.
+4. **Parallel Tarjan on the rest**, with every removed vertex marked complete
+   first. Each removed set is a union of whole components, so no remaining
+   component passes through a removed vertex, and the engine and its
+   model-checked protocols run unchanged.
+
+Phases 1 to 3 run on one set of threads separated by a barrier. Two
+implementation problems surfaced while measuring it:
+
+- **Atomic counters per target vertex.** Building the reverse graph with an
+  atomic in-degree count and an atomic cursor per vertex took 29 of 48 ms on
+  the random graph at 16 threads, slower than on one thread: every edge moved
+  a cache line between cores. Bucketing each thread's edges by target range,
+  then building each bucket on one thread, needs no atomics; the composed run
+  fell from 47.5 ms to 19.6 ms.
+- **Trimming through one shared queue.** On `dag`, trimming got slower with
+  threads (46 ms on 1, 60 ms on 16): the removal front is narrow, one thread
+  took most of it, and the others spun on the queue. Each thread now works
+  through its own stack and shares only when the stack grows past 512
+  vertices; the termination count tracks threads holding work rather than
+  vertices. At 16 threads, `dag` took 19 ms.
+
+Two concurrency bugs were found in testing and fixed before measurement:
+
+- **Barrier pairing.** After the last level of a breadth-first search, the
+  threads decided to stop by reading whether the frontier was empty. Thread
+  0 could leave the loop and refill the frontier for the next search before
+  slower threads read it; those then ran an extra level, and the barriers
+  paired up wrongly and hung. The stop decision now has its own variable,
+  written in one phase and read only after that phase's barrier.
+- **ThreadSanitizer and `std::barrier`.** libc++ performs part of each arrival
+  at a `std::barrier` inside its shared library, where ThreadSanitizer cannot
+  see the ordering it provides, so it reported the cross-phase accesses as
+  races. The phases now use a small barrier built from atomics in this code.
+  It is also faster here: `clusters` went from 10.2 to 8.0 ms at 16 threads.
+
+A thread that fails to start now cancels the run at a start gate before any
+phase begins, so no thread can wait at a barrier for one that does not exist.
+
+Median times on the Apple M5 Max, the fastest of three passes taken minutes
+apart (the passes agreed within 3%). A batch counted only if other processes
+used under one core before and after it, and if its sequential run matched the
+machine's normal speed: a first attempt straight after a long stress run,
+while background services were busy, measured parallel runs up to three times
+slower than this.
+
+| Graph | Sequential | Parallel Tarjan, 16 threads | Composed, 16 threads | Composed, 1 thread |
+| --- | --- | --- | --- | --- |
+| `clusters`, 1M vertices | 11.9 ms | 3.4 ms | 7.8 ms | 43.9 ms |
+| `clusters`, 10M vertices | 133 ms | 48.6 ms | 113 ms | 883 ms |
+| `random`, 1M vertices | 72.7 ms | 204 ms | 19.2 ms | 83.9 ms |
+| `dag`, 1M vertices | 15.9 ms | 30.0 ms | 17.8 ms | 43.7 ms |
+
+- **Giant component.** On `random` the composed algorithm is 3.8 times as fast
+  as the sequential algorithm at 16 threads (4.0 times at 18) and 10.6 times as
+  fast as parallel Tarjan. On one thread it costs 1.15 times the sequential
+  time: building the reverse graph and two breadth-first searches replace one
+  depth-first search.
+- **Clustered graphs.** Parallel Tarjan stays the better choice. The composed
+  algorithm builds the reverse graph and searches forward from a pivot through
+  most of the graph, only to find one cluster.
+- **DAG.** Trimming removes every vertex, and from 8 threads on the composed
+  algorithm beats parallel Tarjan, but neither beats the sequential algorithm (the
+  composed algorithm reaches 0.92 times at 18 threads). The removal front of
+  this DAG is narrow.
+- **More threads than cores.** The composed algorithm degrades gently on `dag`
+  (18.5 ms at 36 threads) where parallel Tarjan quadruples; its phases wait at
+  barriers rather than on particular searches.
+
+**Validation.** All 9 CTest cases pass in release, AddressSanitizer +
+UndefinedBehaviorSanitizer and ThreadSanitizer builds (the last with no
+reports). The stress harness ran the composed algorithm in two concurrent
+processes at 16 to 128 workers on 1,500 to 100,000-vertex random graphs: 400
+runs, 45,600 graph runs over 22,800 distinct graphs, with no hang and no wrong
+partition.
+
 ## Remaining work and limits
 
 1. **Smaller hot cells.** Moving the blocked-list pointer and the successor
@@ -585,11 +676,16 @@ they leave out.
    measurements above, that should save roughly 15% on large graphs. It
    touches the suspension protocol's code paths, so it should be made with the
    model and stress tests at hand.
-2. **Idle waiting.** Workers yield for 200 µs, then poll every 1 ms.
+2. **Choosing between the algorithms.** Neither algorithm wins on every graph,
+   and the caller chooses. An automatic choice could start trimming and the
+   forward search, and fall back to parallel Tarjan when the pivot's component
+   turns out small. Direction-optimizing breadth-first search would also cut
+   the composed algorithm's cost on dense frontiers.
+3. **Idle waiting.** Workers yield for 200 µs, then poll every 1 ms.
    C++20 `atomic::wait` on the active-search count has not been measured.
-3. **Packaging.** There is no install or export rule yet; consume the library
+4. **Packaging.** There is no install or export rule yet; consume the library
    with `add_subdirectory` or `FetchContent`. The project has no license file.
-4. **ThreadSanitizer with GCC.** CI still runs only the `tsan-core` tests under
+5. **ThreadSanitizer with GCC.** CI still runs only the `tsan-core` tests under
    GCC's ThreadSanitizer because of the queue's fences (see above).
 
 ## Primary references

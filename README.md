@@ -8,7 +8,11 @@ component, and searches that end up blocking each other in a cycle are merged by
 moving vertices between their stacks. See [the dissertation](dissertation.pdf)
 for the algorithm, its correctness argument, and the original measurements.
 
-The library also has a sequential, iterative Tarjan's algorithm, which is the
+Because of how it splits the work, the parallel search cannot speed up a graph
+with one giant component: every search that enters it is merged into one. For
+such graphs the library also has a composed algorithm that removes the giant
+component first, using breadth-first parallel phases, and then runs the parallel
+search on what is left. A sequential, iterative Tarjan's algorithm is the
 baseline for the benchmarks and the reference in the tests.
 
 ## Build and run
@@ -47,21 +51,23 @@ compressed sparse row form; build it from an edge list or from adjacency lists.
 const std::vector<ptarjan::Edge> edges{{0, 1}, {1, 0}, {1, 2}};
 const ptarjan::Graph graph(3, edges);
 
-ptarjan::Components components = ptarjan::parallelScc(graph, 8); // or sequentialScc(graph)
+ptarjan::Components components = ptarjan::parallelScc(graph, 8);
+// or multistepScc(graph, 8) for a graph with a giant component, or sequentialScc(graph)
 for (std::span<const ptarjan::Vertex> component : components) {
     // ...
 }
 ```
 
-- `parallelScc(graph, threads)` accepts any positive number of threads and
-  defaults to the hardware concurrency.
+- `parallelScc(graph, threads)` and `multistepScc(graph, threads)` accept any
+  positive number of threads and default to the hardware concurrency. Which is
+  faster depends on the graph; see Benchmarks.
 - `Components` owns its result: every component is a span into one shared
   buffer, so a result costs two allocations however many components there are.
 - The order of components, and of vertices within a component, is
   unspecified. `normalized()` sorts both, so two results can be compared with
   `==`; `toVectors()` copies the result into nested vectors.
 - If a worker throws (in practice `std::bad_alloc`), the other workers stop and
-  `parallelScc` rethrows the exception.
+  the call rethrows the exception.
 - To use graphs whose vertex identifiers are not dense, number them
   `0 .. n-1` first; `bench/graph_sources.cpp` shows one way.
 
@@ -70,44 +76,47 @@ Link against the `ptarjan::ptarjan` target, for example after
 
 ## Benchmarks
 
-`ptarjan_bench` times both algorithms on a seeded synthetic graph or a graph
+`ptarjan_bench` times the algorithms on a seeded synthetic graph or a graph
 file, and checks every parallel result against the sequential one:
 
 ```sh
 ./build/ptarjan_bench --graph clusters --vertices 1000000 --threads 1,2,4,8,16 --runs 7
 ./build/ptarjan_bench --graph edges:soc-LiveJournal1.txt --threads 8   # SNAP edge list
+./build/ptarjan_bench --algorithms multistep --graph random --threads 16
 ./build/ptarjan_bench --help
 ```
 
 The `csp:FILE` format reads the state-space graphs used in the dissertation.
 
-Median times on an 18-core Apple M5 Max, for graphs of one million vertices and
-about four million edges:
+Median times at 16 threads on an 18-core Apple M5 Max (6 Super and 12
+Performance cores), for graphs of about four edges per vertex:
 
-| Graph | Sequential | Parallel, 1 thread | 4 threads | 16 threads |
-| --- | --- | --- | --- | --- |
-| `clusters`: 15,625 components of 64 vertices | 12.8 ms | 25.8 ms | 6.9 ms | 3.7 ms |
-| `random`: one component of 960,670 vertices | 73.1 ms | 154.9 ms | 200.6 ms | 208.1 ms |
-| `dag`: every component a single vertex | 16.7 ms | 29.1 ms | 20.4 ms | 29.3 ms |
+| Graph | Sequential | Parallel Tarjan | Composed |
+| --- | --- | --- | --- |
+| `clusters`, 1M vertices: 15,625 components of 64 | 11.9 ms | **3.4 ms (3.4×)** | 7.8 ms (1.5×) |
+| `clusters`, 10M vertices: 10,000 components of 1,000 | 133 ms | **48.6 ms (2.7×)** | 113 ms (1.2×) |
+| `random`, 1M vertices: one component of 960,670 | 72.7 ms | 204 ms (0.36×) | **19.2 ms (3.8×)** |
+| `dag`, 1M vertices: every component a single vertex | **15.9 ms** | 30.0 ms (0.53×) | 17.8 ms (0.89×) |
 
-With 10 million vertices in clusters of 1,000, the sequential algorithm takes
-143 ms and the parallel one 55 ms on 16 threads. Use no more threads than free
-cores (the default is the hardware thread count). With more, a descheduled
-worker holds up every search waiting on it: at 24 and 36 threads the `dag`
-graph takes four times as long as at 16.
+Choose by the shape of the graph:
 
-On one thread the parallel algorithm costs about twice as much as the
-sequential one, mostly because of its larger per-vertex state and the
-bookkeeping for suspending and merging searches.
-[The audit, section 11](docs/concurrency-audit.md#11-restructure-around-dense-vertex-identifiers)
-breaks this down, shows where the workers' time goes, and compares the
+- **Many medium-sized components** (clustered graphs): `parallelScc`. The
+  searches work in separate parts of the graph.
+- **One giant component** (typical of web, social and citation graphs):
+  `multistepScc`. It extracts the giant component with two parallel
+  breadth-first searches, which scale where depth-first search cannot.
+- **Long chains of dependencies** (a deep DAG): neither beats the sequential
+  algorithm here. Each search waits for the vertices ahead of it, and trimming
+  can only peel the DAG from its ends.
+
+On one thread the parallel search costs about twice as much as the sequential
+one: its per-vertex state is larger, and it has bookkeeping for suspending and
+merging searches. Use no more threads than free cores (the default is the
+hardware thread count). With more, a descheduled worker holds up every search
+waiting on it: at 24 and 36 threads parallel Tarjan takes 3.5 to 4 times as long
+on `dag` as at 16. [The audit, sections 11 and 12](docs/concurrency-audit.md)
+break down the costs, show where the workers' time goes, and compare the
 dissertation-era code on the same graphs.
-
-Speedup depends heavily on the graph. Clustered graphs, with many medium-sized
-components, give the searches separate work. A graph with one giant component
-does not, because the algorithm merges every search that enters that component
-into one. Nor does a DAG whose searches all run into each other, because each
-must wait for the vertices ahead of it to complete.
 
 ## Is it lock-free?
 
@@ -142,6 +151,9 @@ Since then:
   hang when one idle thread was descheduled; see the audit, section 8.
 - **Correctness fixes.** Generation checks, publication order, a cycle walk
   that could loop, and several data races; see the audit.
+- **A composed algorithm** for graphs with a giant component (`multistepScc`):
+  trimming and a forward-backward search first, then the parallel search on
+  the rest.
 - **Root blocks.** Workers take blocks of up to 256 root vertices instead of
   one vertex at a time. This spreads the searches across the graph and removes
   a shared counter that every worker incremented for every vertex.
@@ -158,7 +170,10 @@ implementation. They cover empty graphs, self-loops, duplicate edges, long
 chains and cycles, seeded random graphs, 1 to 128 threads started
 simultaneously, synchronized contention, many searches suspended on one vertex,
 and long runs at 63 to 128 threads on small graphs, where termination problems
-show up. CTest applies timeouts so a hang is reported as a failure.
+show up. Every differential test also checks the composed algorithm, and its own
+test covers DAGs, giant components with trees on both sides, and equal-sized
+components at 1 to 64 threads. CTest applies timeouts so a hang is reported as a
+failure.
 
 ```sh
 # Invalid memory access and undefined behavior
