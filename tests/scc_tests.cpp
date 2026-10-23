@@ -152,6 +152,8 @@ void compareAlgorithms(const Graph& graph, unsigned threadCount, const std::stri
     requirePartition(ptarjan::sequentialScc(graph), graph, description + " (sequential)");
     requirePartition(ptarjan::parallelScc(graph, threadCount), graph,
                      description + " (" + std::to_string(threadCount) + " threads)");
+    requirePartition(ptarjan::multistepScc(graph, threadCount), graph,
+                     description + " (multistep, " + std::to_string(threadCount) + " threads)");
 }
 
 Graph randomGraph(Vertex vertexCount, std::size_t edgeCount, std::mt19937& generator) {
@@ -186,6 +188,9 @@ void apiTests() {
                                      "an adjacency list naming a missing vertex must be rejected");
     requireThrows<std::invalid_argument>([] { ptarjan::parallelScc(Graph(), 0); },
                                          "zero workers must be rejected before starting threads");
+    requireThrows<std::invalid_argument>([] { ptarjan::multistepScc(Graph(), 0); },
+                                         "multistep must reject zero workers");
+    require(ptarjan::multistepScc(empty, 4).empty(), "empty graph has multistep components");
     require(ptarjan::defaultThreadCount() >= 1, "the default thread count must be positive");
 
     const Components components({4, 1, 3, 0, 2}, {0, 2, 3, 5});
@@ -315,6 +320,64 @@ void fanInTests() {
     }
 }
 
+// Shapes that exercise each multistep phase: graphs trimming finishes, a giant
+// component with trees hanging off both sides, and several components of similar size
+// so the forward-backward pivot takes only one of them. Many threads and repeats, since
+// the trim queue and the barriers are concurrency code of their own.
+void multistepTests() {
+    std::mt19937 generator(0x3A57E9U);
+    for (unsigned round = 0; round < 40; ++round) {
+        const unsigned threadCount = std::vector<unsigned>{1, 2, 7, 16, 64}[round % 5];
+        std::vector<Edge> edges;
+        Vertex vertexCount = 0;
+        switch (round % 4) {
+        case 0: { // DAG: trimming removes everything
+            vertexCount = 3000;
+            for (Vertex v = 0; v + 1 < vertexCount; ++v)
+                for (int k = 0; k < 3; ++k)
+                    edges.push_back(
+                        {v, v + 1 +
+                                static_cast<Vertex>(generator() %
+                                                    std::min<Vertex>(50, vertexCount - v - 1))});
+            break;
+        }
+        case 1: { // giant component (a cycle with chords) plus in- and out-trees and self-loops
+            vertexCount = 4000;
+            for (Vertex v = 0; v < 2000; ++v) {
+                edges.push_back({v, (v + 1) % 2000});
+                edges.push_back({v, static_cast<Vertex>(generator() % 2000)});
+            }
+            for (Vertex v = 2000; v < 3000; ++v)
+                edges.push_back({v, static_cast<Vertex>(generator() % v)}); // into the giant part
+            for (Vertex v = 3000; v < vertexCount; ++v)
+                edges.push_back({static_cast<Vertex>(generator() % 2000), v}); // out of it
+            for (Vertex v = 0; v < vertexCount; v += 97)
+                edges.push_back({v, v});
+            break;
+        }
+        case 2: { // several equal cycles joined in one direction
+            vertexCount = 4000;
+            for (Vertex v = 0; v < vertexCount; ++v) {
+                const Vertex start = v - v % 500;
+                edges.push_back({v, start + (v + 1) % 500});
+                if (start + 500 < vertexCount && generator() % 50 == 0)
+                    edges.push_back({v, start + 500 + static_cast<Vertex>(generator() % 500)});
+            }
+            break;
+        }
+        default: // sparse random graph: many small components and trimmable vertices
+            vertexCount = 3000;
+            for (std::size_t e = 0; e < 3600; ++e)
+                edges.push_back({static_cast<Vertex>(generator() % vertexCount),
+                                 static_cast<Vertex>(generator() % vertexCount)});
+        }
+        const Graph graph(vertexCount, edges);
+        requirePartition(ptarjan::multistepScc(graph, threadCount), graph,
+                         "multistep round " + std::to_string(round) + " with " +
+                             std::to_string(threadCount) + " threads");
+    }
+}
+
 } // namespace
 
 int main(int argumentCount, char** arguments) {
@@ -322,7 +385,8 @@ int main(int argumentCount, char** arguments) {
         require(
             argumentCount == 3 && std::string(arguments[1]) == "--case",
             "usage: ptarjan_tests --case "
-            "api|differential|thread-boundaries|contention|contention-locked|termination|fan-in");
+            "api|differential|thread-boundaries|contention|contention-locked|termination|fan-in|"
+            "multistep");
         const std::string testCase = arguments[2];
         if (testCase == "api") {
             apiTests();
@@ -338,6 +402,8 @@ int main(int argumentCount, char** arguments) {
             terminationTests();
         } else if (testCase == "fan-in") {
             fanInTests();
+        } else if (testCase == "multistep") {
+            multistepTests();
         } else {
             throw std::invalid_argument("unknown test case: " + testCase);
         }

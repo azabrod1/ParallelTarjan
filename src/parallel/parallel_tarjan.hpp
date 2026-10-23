@@ -70,6 +70,13 @@ public:
 
     Components run();
 
+    //Before run() starts: treats the vertex as already assigned to a component. The caller
+    //must exclude whole components only, and order these writes before run(), for
+    //example by joining the threads that make them
+    void excludeVertex(Vertex vertex) {
+        cells[vertex].status.store(CellStatus::completeCell(), std::memory_order_relaxed);
+    }
+
     Search* getSearch(Worker& worker);
 
     //Called by a worker after execute() returns, whether its search finished or suspended

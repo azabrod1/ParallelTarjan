@@ -24,6 +24,7 @@ using namespace ptarjan;
 struct Options {
     bench::GraphSpec graph;
     std::vector<unsigned> threads{1, 2, 4, 8};
+    std::vector<std::string> algorithms{"parallel", "multistep"};
     int runs = 5;
     int warmups = 1;
     bool verify = true;
@@ -40,6 +41,7 @@ struct Options {
            "  --cluster-size K      vertices per cluster for --graph clusters (default 64)\n"
            "  --seed S              generator seed (default 1)\n"
            "  --threads LIST        comma-separated worker counts (default 1,2,4,8)\n"
+           "  --algorithms LIST     parallel, multistep or both (default parallel,multistep)\n"
            "  --runs R              timed runs per configuration (default 5)\n"
            "  --warmups W           untimed runs first (default 1)\n"
            "  --no-verify           skip comparing each parallel result with the sequential one\n"
@@ -76,6 +78,17 @@ Options parseOptions(int argumentCount, char** arguments) {
             options.graph.clusterSize = static_cast<Vertex>(parseNumber(value(), option));
         } else if (option == "--seed") {
             options.graph.seed = parseNumber(value(), option);
+        } else if (option == "--algorithms") {
+            options.algorithms.clear();
+            const std::string list = value();
+            for (std::size_t start = 0; start <= list.size();) {
+                const std::size_t comma = std::min(list.find(',', start), list.size());
+                const std::string name = list.substr(start, comma - start);
+                if (name != "parallel" && name != "multistep")
+                    throw std::invalid_argument("unknown algorithm: " + name);
+                options.algorithms.push_back(name);
+                start = comma + 1;
+            }
         } else if (option == "--threads") {
             options.threads.clear();
             const std::string list = value();
@@ -181,11 +194,17 @@ int main(int argumentCount, char** arguments) {
         const Timing sequential = measure(options, [&] { return sequentialScc(graph); }, nullptr);
         report("sequential", 1, sequential, sequential.median);
 
-        for (const unsigned threads : options.threads) {
-            const Timing parallel = measure(
-                options, [&] { return parallelScc(graph, threads); },
-                options.verify ? &reference : nullptr);
-            report("parallel", threads, parallel, sequential.median);
+        for (const std::string& algorithm : options.algorithms) {
+            for (const unsigned threads : options.threads) {
+                const Timing timing = measure(
+                    options,
+                    [&] {
+                        return algorithm == "multistep" ? multistepScc(graph, threads)
+                                                        : parallelScc(graph, threads);
+                    },
+                    options.verify ? &reference : nullptr);
+                report(algorithm.c_str(), threads, timing, sequential.median);
+            }
         }
 
         if (!options.csv)
