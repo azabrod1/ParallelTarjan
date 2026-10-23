@@ -231,7 +231,7 @@ void differentialTests() {
 
     std::mt19937 generator(0x5CC2026U);
     for (unsigned graphNumber = 0; graphNumber < 60; ++graphNumber) {
-        const Vertex vertexCount = 1 + generator() % 96;
+        const auto vertexCount = static_cast<Vertex>(1 + generator() % 96);
         const std::size_t edgeCount = std::size_t{vertexCount} * (graphNumber % 7);
         compareAlgorithms(randomGraph(vertexCount, edgeCount, generator), 1 + graphNumber % 16,
                           "random graph " + std::to_string(graphNumber));

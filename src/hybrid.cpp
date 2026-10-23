@@ -66,7 +66,7 @@ private:
 //inside its shared library, where ThreadSanitizer cannot see the ordering it provides
 class PhaseBarrier {
 public:
-    explicit PhaseBarrier(unsigned count) : count(count) {}
+    explicit PhaseBarrier(unsigned threads) : count(threads) {}
 
     //Waits until every thread has arrived. The last to arrive runs onLast before any
     //thread continues
@@ -97,16 +97,16 @@ private:
 
 class Hybrid {
 public:
-    Hybrid(const Graph& graph, unsigned threadCount)
-        : graph(graph), n(graph.vertexCount()), threadCount(threadCount),
+    Hybrid(const Graph& input, unsigned workers)
+        : graph(input), n(input.vertexCount()), threadCount(workers),
           state(std::make_unique<std::atomic<std::uint8_t>[]>(n)),
           forward(std::make_unique<std::atomic<std::uint8_t>[]>(n)),
           backward(std::make_unique<std::atomic<std::uint8_t>[]>(n)),
           inDegree(std::make_unique<std::atomic<std::uint32_t>[]>(n)),
           outDegree(std::make_unique<std::atomic<std::uint32_t>[]>(n)),
-          inOffsets(n + std::size_t{1}), trimmed(threadCount), nextFrontiers(threadCount),
-          giantParts(threadCount), pivotCandidates(threadCount), roots(n, threadCount),
-          engine(graph, threadCount, pending, roots), barrier(threadCount) {}
+          inOffsets(n + std::size_t{1}), trimmed(workers), nextFrontiers(workers),
+          giantParts(workers), pivotCandidates(workers), roots(n, workers),
+          engine(input, workers, pending, roots), barrier(workers) {}
 
     Components run() {
         //Threads wait at a start gate until all of them exist, so that a thread that fails to
