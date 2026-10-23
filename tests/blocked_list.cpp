@@ -7,9 +7,11 @@
 #include <unordered_set>
 #include <vector>
 
-#include "blockedList.hpp"
+#include "blocked_list.hpp"
 
 namespace {
+
+using ptarjan::detail::BlockedList;
 
 void require(bool condition, const char* message) {
     if (!condition) {
@@ -19,7 +21,7 @@ void require(bool condition, const char* message) {
 
 std::unordered_set<int*> collectPublishedEntries(BlockedList<int*>& blockedList) {
     std::unordered_set<int*> observed;
-    const int snapshotSize = blockedList.size();
+    const std::size_t snapshotSize = blockedList.size();
     auto iterator = blockedList.getIt(snapshotSize);
     while (iterator.increment()) {
         int* entry = iterator.getNext();
@@ -32,15 +34,14 @@ std::unordered_set<int*> collectPublishedEntries(BlockedList<int*>& blockedList)
 }
 
 void checkGrowthBoundary(std::size_t entryCount) {
-    BlockedList<int*> blockedList;
     std::vector<int> payloads(entryCount);
     std::unordered_set<int*> expected;
     for (int& payload : payloads) {
         expected.insert(&payload);
     }
 
-    // Reuse the same allocated buffers after each quiescent reset.
     for (int repetition = 0; repetition < 3; ++repetition) {
+        BlockedList<int*> blockedList;
         std::atomic<std::size_t> nextEntry{0};
         std::atomic<bool> start{false};
         std::atomic<std::size_t> finishedProducers{0};
@@ -76,13 +77,9 @@ void checkGrowthBoundary(std::size_t entryCount) {
             producer.join();
         }
         require(snapshotsValid, "A concurrent iterator returned an invalid pointer");
-        require(blockedList.size() == static_cast<int>(entryCount), "Reserved entry count is wrong");
+        require(blockedList.size() == entryCount, "Reserved entry count is wrong");
         require(collectPublishedEntries(blockedList) == expected,
                 "Entries were lost while concurrently growing the blocked list");
-
-        blockedList.reset();
-        require(blockedList.size() == 0, "Reset did not clear the size");
-        require(collectPublishedEntries(blockedList).empty(), "Reset left published entries");
     }
 }
 
@@ -93,13 +90,12 @@ int main() {
         // The default blocks hold 8, 64, 512, 4096, ... entries. Probe both
         // sides of each cumulative boundary, including the iterator's exact
         // switch from the embedded array to auxiliary buffers.
-        const std::vector<std::size_t> entryCounts{
-            7, 8, 9, 71, 72, 73, 583, 584, 585, 4679, 4680, 4681
-        };
+        const std::vector<std::size_t> entryCounts{7,   8,   9,   71,   72,   73,
+                                                   583, 584, 585, 4679, 4680, 4681};
         for (const std::size_t entryCount : entryCounts) {
             checkGrowthBoundary(entryCount);
         }
-        std::cout << "Blocked-list growth, concurrent snapshots, and reset checks passed\n";
+        std::cout << "Blocked-list growth and concurrent snapshot checks passed\n";
     } catch (const std::exception& failure) {
         std::cerr << "Blocked-list regression failed: " << failure.what() << '\n';
         return 1;

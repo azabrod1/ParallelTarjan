@@ -1,7 +1,15 @@
 # Concurrency and modernization audit
 
 Audit date: 22 October 2026. Original revision:
-[`9a97f027e5b262d54d2fe89c7da5294e9a41dcf7`](https://github.com/azabrod1/ParallelTarjan/commit/9a97f027e5b262d54d2fe89c7da5294e9a41dcf7).
+[`9a97f027e5b262d54d2fe89c7da5294e9a41dcf7`](https://github.com/azabrod1/ParallelTarjan/commit/9a97f027e5b262d54d2fe89c7da5294e9a41dcf7)
+(tagged `dissertation-2017`).
+
+> **Sections 1 to 10 describe the dissertation-era code** (`Tarjan Code/`),
+> with the fixes that were applied to it. The code was then restructured
+> around dense vertex identifiers, which removed the hash-table dictionaries,
+> cell recycling, and reference counting that several of these findings
+> concern. Section 11 describes that restructure and how it was validated.
+> File paths and test names in sections 1 to 10 refer to the old layout.
 
 ## Scope and conclusion
 
@@ -369,39 +377,220 @@ CTest without the label filter leaves that path available for investigation.
 Changing the queue or adding precise, justified sanitizer annotations should
 be a separate reviewed change.
 
+## 11. Restructure around dense vertex identifiers
+
+Date: 23 October 2026.
+
+### What changed
+
+The public API now takes an immutable compressed-sparse-row `Graph` over
+vertices `0 .. n-1` and returns a value-owned `Components` (one vertex buffer
+plus offsets). With dense identifiers every vertex gets its own 32-byte cell
+for the whole run, allocated in one array before the workers start. That makes
+the following unnecessary, and they were removed:
+
+- the `Dictionary` interface and its seven backends, including the vendored
+  libcuckoo headers and the optional TBB map (sections 3, 4 and 10);
+- cell recycling, generation counts, weak references and reference counting
+  (sections 2 and 5): a cell can no longer change identity, so the second
+  pass of the cycle walk no longer records or rechecks cell ages;
+- the per-neighbor dictionary insertion and neighbor vector when a cell is
+  first explored. A cell keeps a cursor into the graph's successor array
+  instead. The neighbor-choice heuristic may still take one of the next 16
+  successors out of turn; a 32-bit mask in the cell records which.
+
+The suspension handshake, the cycle walk with its consensus CAS and Brent
+check, cell transfer, and the active-search count are otherwise unchanged.
+These details are new:
+
+- **Lazy blocked lists.** Each cell holds an atomic pointer to its blocked
+  list, installed with a CAS on first use; the worker that installs a list owns
+  it, so cells are trivially destructible. A completing worker that reads a
+  null pointer resumes nobody. The installing CAS, the push and the
+  completeness recheck are all sequentially consistent, so the argument in
+  section 6 still applies. The list's index is now 64 bits, and its capacity
+  exceeds 2^32 entries, more than the number of suspensions any one cell can
+  receive. (The old 19,173,960-entry limit could be exceeded, with undefined
+  behavior, by a vertex with more predecessors than that.)
+- **Root blocks.** Workers take up to 256 consecutive root vertices at a time
+  instead of incrementing one shared counter per vertex. A worker counts the
+  block in `activeSearches` before taking it and releases that count when it has
+  examined every vertex in the block. When it claims the block's last root,
+  the block's count passes to the new search. So the count is still zero only
+  when nothing is running, pending, or held unexamined.
+- **Queue tokens.** Each worker uses its own moodycamel producer and consumer
+  token. Without them every dequeue scans all producers.
+
+Workers that throw (in practice `std::bad_alloc`) record the first exception,
+make the other workers stop taking searches, and `parallelScc` rethrows after
+joining every thread. A failure to start a thread is handled the same way.
+
+### Performance
+
+`ptarjan_bench` on an Apple M5 Max (6 "Super" and 12 "Performance" cores),
+macOS 27, Apple clang 21. Medians of 5 to 7 runs on graphs of 1,000,000
+vertices and about 4,000,000 edges. Each batch of runs started only while all
+other processes together used under one core (sampled with `top`), and was
+repeated if load appeared by the end of it.
+
+| Graph | Sequential | 1 thread | 4 threads | 16 threads |
+| --- | --- | --- | --- | --- |
+| `clusters` (15,625 SCCs of 64) | 12.8 ms | 25.8 ms | 6.9 ms | 3.7 ms |
+| `random` (one SCC of 960,670) | 73.1 ms | 154.9 ms | 200.6 ms | 208.1 ms |
+| `dag` (every SCC a single vertex) | 16.7 ms | 29.1 ms | 20.4 ms | 29.3 ms |
+
+On 10,000,000 vertices in clusters of 1,000 (degree 6, 62.5 million edges), the
+sequential algorithm took 143 ms and the parallel one 363 ms on 1 thread,
+106 ms on 4, 70 ms on 8 and 55 ms on 16.
+
+The dissertation-era engine (commit `b9d4ba4`, with the fixes of sections 1 to
+10) on the same graphs, read from files with identical vertex numbering:
+
+| Graph | Old sequential | Old parallel, 16 threads | New sequential | New parallel, 16 threads |
+| --- | --- | --- | --- | --- |
+| `clusters` | 123 ms | 119 ms | 12.8 ms | 3.7 ms |
+| `random` | 627 ms | 430 ms | 73.1 ms | 208 ms |
+| `dag` | 40.8 ms | 111 ms | 16.7 ms | 29.3 ms |
+
+What the measurements show:
+
+- **The hash tables were the old bottleneck.** In profiles of the old code the
+  dictionary insert was one of the two most-sampled functions. The old
+  sequential algorithm, which also used a hash map, was 3 to 9 times slower than
+  the new CSR version. The dissertation's speedups were measured against that
+  slower baseline.
+- **Three code bottlenecks limited scaling, and were removed.**
+  - *One shared root counter.* Every worker incremented it for every vertex,
+    and workers started searches next to each other. Before root blocks the
+    restructured engine was slower on `clusters` with 16 threads than with one
+    (27 ms against 25 ms); with them it suspends about 5,000 times on that
+    graph at 16 threads. (The old engine suspended about 2 million times at 16
+    threads on a similar graph of 16-vertex cycles.)
+  - *Single-threaded setup and teardown proportional to the graph.* The first
+    version of the restructure copied every successor so the heuristic could
+    reorder them, and destroyed every cell to free blocked lists. At 10,000,000
+    vertices and 16 threads that took 9 to 19 ms before the workers started and
+    about 8 ms after they stopped, in a 75 ms run. Reading the graph in place
+    and making cells trivially destructible brought those to 1.2 ms and under
+    0.1 ms.
+  - *Dequeues that scan every producer.* Queue tokens alone cut the 16-thread
+    time by 27% on `dag` and 4% on `clusters` (medians of interleaved runs).
+    Together with the previous change, 16-thread times fell 27% on `dag` and
+    20% on `clusters`.
+  - *Idle workers sleeping at once.* Once the setup was gone, the 1 ms sleep of
+    a worker that found no work became visible: work often arrives in the
+    pending queue a moment later. Medians at 16 threads:
+
+    | Idle strategy | `clusters`, 1M | `clusters`, 10M | `dag` |
+    | --- | --- | --- | --- |
+    | Sleep 1 ms at once (before) | 4.9 ms | 75.9 ms | 31.5 ms |
+    | Yield in a loop, never sleep | 4.0 ms | 58.6 ms | 53.5 ms |
+    | Yield for 200 µs, then sleep 1 ms (adopted) | 3.7 ms | 55.3 ms | 29.3 ms |
+
+    Spinning without end slows `dag`: idle workers then hammer the queue and
+    the termination count that the working threads also use.
+- **Measured, and not bottlenecks.** Root blocks of 256 were about as good as
+  any size: blocks of 16 were much slower, and 4,096 or more slowed `dag`.
+  Relaxing memory orders on the hot path made no difference (next point).
+- **The one-thread cost is 1.7 to 2.5 times the sequential cost.** It is not
+  the atomic operations. On `random`, none of these changed the one-thread time
+  beyond run-to-run noise (about 4%): a plain store instead of the claim CAS, a
+  relaxed completion store, skipping the blocked-list check, or a relaxed
+  per-edge status load. About half is the working set: padding the sequential
+  algorithm's per-vertex state from 8 to 32 bytes slowed it from 76 ms to
+  128 ms on `random`, and padding the parallel cells from 32 to 64 bytes
+  slowed them by 15 to 19%. The rest is the parallel engine's bookkeeping: two
+  stacks of cell pointers, a second pass over each completed component, and
+  per-search state.
+- **What limits scaling now is the dependency structure.** Share of the
+  workers' time at 16 threads, measured before the idle change above:
+
+  | Graph | Running searches | Finding work | Sleeping, nothing to do | Outside the worker loop |
+  | --- | --- | --- | --- | --- |
+  | `clusters`, 10,000,000 vertices | 62% | 6% | 24% | 8% |
+  | `clusters`, 1,000,000 vertices | 52% | 9% | 26% | 13% |
+  | `dag` | 63% | 15% | 5% | 18% |
+  | `random` | 13% | 4% | 77% | 7% |
+
+  At 8 threads on the large clustered graph, workers sleep only 1.6% of the
+  time. A search follows forward edges through a chain of clusters, and a
+  cluster can be completed only after everything it reaches, so with 16 workers
+  there is often nothing runnable. On `random`, every search that enters the
+  giant component is merged into one (292,000 cycle resolutions at 16 threads),
+  so one worker does most of the work. On `dag`, searches suspend on each other
+  160,000 times at 16 threads. "Outside the worker loop" is thread start-up and
+  exit and the single-threaded allocation and result merge. Beyond six threads
+  the workers also run on the slower Performance cores.
+- **More threads than cores is costly when searches wait on each other.** On
+  `dag`, 24 and 36 threads took about 128 ms, four times the 16-thread time,
+  whatever idle workers do: a descheduled worker holds up every search waiting
+  on its vertices. Clustered graphs lose nothing (3.6 ms at 36 threads).
+
+### Validation
+
+macOS 27, Apple M5 Max, Apple clang 21:
+
+| Configuration | Result |
+| --- | --- |
+| Release, all 8 CTest tests | Passed |
+| AddressSanitizer + UndefinedBehaviorSanitizer, all tests | Passed |
+| ThreadSanitizer, all tests including the lock-free queue | Passed, no reports |
+| clang-tidy with `.clang-tidy` on library, benchmark and demo | No warnings |
+| Stress harness, final revision: four concurrent processes, 16 to 128 workers, 1,500 to 100,000 vertices | 640 runs, 93,600 graphs: no hang, no wrong partition |
+| Stress harness, an earlier revision with the same scheduler: four concurrent processes, 16 to 128 workers | 1,280 runs, 187,200 graphs: no hang, no wrong partition |
+
+Every stress run checks the partition against a Kosaraju oracle under a
+20- or 30-second watchdog. The earlier revision differs only in joining threads through
+`std::jthread`, an unbounded neighbor lookahead, and the graph-file reader.
+These counts are separate from the 960 runs in section 8. GCC builds of the restructured code are covered only by
+CI; they have not been run locally.
+
+### Model checking
+
+`spec/` contains TLA+ models of the termination, suspension and
+cycle-detection protocols, checked with TLC 2.19 (`spec/README.md` has every
+configuration, bound and state count). The models were written from commit
+`2a280d9`, and termination also from `b9d4ba4` and from the original flag
+protocol. Later changes (queue tokens, the out-of-turn successor mask,
+worker-owned blocked lists, spinning before sleeping) do not alter any
+modeled atomic step.
+
+- **Termination with root blocks:** no worker exits while a search is
+  running or pending or a block is held unexamined; when every worker has
+  exited, every vertex has been claimed and every search is done; every
+  worker eventually exits, even with idle workers stalled forever. Checked
+  with 3 workers and 3 to 4 vertices (up to 1.2 million distinct states).
+- **Suspension:** no search is resumed twice or lost, including stale list
+  entries, the lazily allocated list, recycled searches and transfers
+  (2 workers, 2 searches, 2 cells; up to 26 million distinct states).
+- **Cycle detection:** concurrent resolvers never share a member, members do
+  not change during a resolution, and no blocking cycle is left unresolved
+  (up to 3 searches with 2 cells each; 30 million distinct states).
+- **The original flag protocol fails** three ways: the early exit of section
+  8 (a 24-step trace), the hang caused by one stalled idle worker, and a hang
+  without any stall, when a failed root claim leaves a worker's bit set. In
+  the model, neither failure ends a run with vertices missing; they lose
+  parallelism or hang.
+
+Each protocol also has deliberately broken variants (counting a root after
+taking it, enqueuing before counting, no completeness recheck, no consensus
+CAS, and others), and TLC catches every one. The bounds are small and the
+models check the protocols, not Tarjan's ranks; `spec/README.md` lists what
+they leave out.
+
 ## Remaining work and limits
 
-1. **Check the cycle-walk bound against the proof.** Section 9's repeated-search
-   check is argued above but has not been model-checked.
-2. **Model-check termination.** The active-search count does not rely on the
-   queue observing emptiness, since a search in `Pending` is always counted,
-   but the argument in section 8 has not been model-checked.
-3. **Define resource-failure behavior.** Exceptions in worker threads and
-   partial thread creation are not yet converted into a cooperative error
-   result. Adding `jthread` alone would not solve termination if fewer workers
-   than expected actually start.
-4. **Replace legacy ownership and APIs.** Prefer a value-owned SCC result,
-   const graph views, and explicit graph-building/finalization. The older
-   `DirectedHashGraph` still has manual ownership defects and does not implement
-   the vector-neighbor interface the current algorithms use. Historical
-   generators and that representation are outside the validated public path.
-5. **Review finite counters and capacities.** Generations and vertex IDs are
-   32-bit; `BlockedList` has a finite template-dependent maximum without a
-   checked overflow path. The default list capacity is 19,173,960 entries.
-   These limits deserve explicit contracts before claiming general-purpose
-   library support.
-6. **Benchmark before changing architecture.** Compact adjacency storage,
-   value-owned SCCs, wakeups instead of millisecond polling (see section 8 for
-   one measured regression), and pool management are useful candidates. Measure
-   throughput, peak memory, and tail latency on disconnected, chain, giant-SCC,
-   and clustered graphs. Keep the sequential implementation and simple locked
-   backend as correctness/performance baselines.
-7. **Finish repository packaging.** The concurrent queue is now fetched at a
-   pinned upstream release; the libcuckoo headers used by the `Cuckoo` backend
-   are still vendored. Record upstream versions and notices, choose an explicit
-   project license, and replace the local-path benchmark with a seeded CLI. Optional
-   TBB and all experimental backends need their own validation matrix before
-   making broad portability claims.
+1. **Smaller hot cells.** Moving the blocked-list pointer and the successor
+   cursor out of `Cell` would halve it to 16 bytes. From the padding
+   measurements above, that should save roughly 15% on large graphs. It
+   touches the suspension protocol's code paths, so it should be made with the
+   model and stress tests at hand.
+2. **Idle waiting.** Workers yield for 200 µs, then poll every 1 ms.
+   C++20 `atomic::wait` on the active-search count has not been measured.
+3. **Packaging.** There is no install or export rule yet; consume the library
+   with `add_subdirectory` or `FetchContent`. The project has no license file.
+4. **ThreadSanitizer with GCC.** CI still runs only the `tsan-core` tests under
+   GCC's ThreadSanitizer because of the queue's fences (see above).
 
 ## Primary references
 

@@ -1,0 +1,14 @@
+# Applied to the project's own sources: clang-format -i include/ptarjan/*.hpp src/*.cpp src/parallel/* bench/* examples/* tests/*
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakTemplateDeclarations: Yes
+PointerAlignment: Left
+IncludeBlocks: Preserve
+FixNamespaceComments: true
+# Keep the hand-drawn diagrams and prose in the algorithm's comments as written.
+ReflowComments: false

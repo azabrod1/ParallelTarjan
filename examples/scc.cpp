@@ -1,16 +1,15 @@
-#include "AdjacencyListGraph.h"
-#include "tarjan.hpp"
-
-#include <algorithm>
+#include <cstddef>
 #include <iostream>
-#include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+#include "ptarjan/scc.hpp"
 
 int main(int argumentCount, char** arguments) {
     try {
         if (argumentCount > 2)
-            throw std::invalid_argument("Usage: parallel_tarjan_demo [workers >= 1]");
+            throw std::invalid_argument("Usage: ptarjan_demo [workers >= 1]");
 
         unsigned workerCount = 4;
         if (argumentCount == 2) {
@@ -22,33 +21,21 @@ int main(int argumentCount, char** arguments) {
             workerCount = static_cast<unsigned>(parsedCount);
         }
 
-        AdjacencyListGraph<Vid> graph;
-        graph.bulkInsertEdges({{0, 1}, {1, 2}, {2, 0}, {2, 3}, {3, 4}, {4, 3}});
-        graph.insertVertex(5);
+        // Vertices are numbered 0 .. 5. Vertex 5 has no edges.
+        const std::vector<ptarjan::Edge> edges{{0, 1}, {1, 2}, {2, 0}, {2, 3}, {3, 4}, {4, 3}};
+        const ptarjan::Graph graph(6, edges);
 
-        // The original API transfers ownership of both the SCC collection and
-        // its component vectors to the caller. Keep that ownership explicit.
-        auto releaseComponents = [](SCC_Set* components) {
-            for (const auto* component : *components)
-                delete component;
-            delete components;
-        };
-        std::unique_ptr<SCC_Set, decltype(releaseComponents)> components(
-            Tarjan::multiThreadedTarjan(graph, workerCount, Sharded_Locked), releaseComponents);
-
-        std::vector<std::vector<Vid>> orderedComponents;
-        for (const auto* component : *components) {
-            orderedComponents.push_back(*component);
-            std::sort(orderedComponents.back().begin(), orderedComponents.back().end());
-        }
-        std::sort(orderedComponents.begin(), orderedComponents.end());
+        // Component and vertex order is unspecified; normalize it for display.
+        const ptarjan::Components components =
+            ptarjan::parallelScc(graph, workerCount).normalized();
 
         std::cout << "Strongly connected components (" << workerCount << " workers):\n";
-        for (const auto& component : orderedComponents) {
+        for (const auto component : components) {
             std::cout << "{";
-            for (std::size_t vertexPosition = 0; vertexPosition < component.size(); ++vertexPosition) {
-                if (vertexPosition != 0) std::cout << ", ";
-                std::cout << component[vertexPosition];
+            for (std::size_t position = 0; position < component.size(); ++position) {
+                if (position != 0)
+                    std::cout << ", ";
+                std::cout << component[position];
             }
             std::cout << "}\n";
         }

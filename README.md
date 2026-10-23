@@ -1,32 +1,33 @@
 # ParallelTarjan
 
-A research implementation of parallel strongly connected component (SCC)
-discovery, based on Tarjan's algorithm. The repository includes the original
-Oxford MSc dissertation, a sequential iterative implementation, and a parallel
-implementation that resolves collisions between searches by transferring cells
-between their DFS stacks.
+A parallel version of Tarjan's algorithm for strongly connected components
+(SCCs), from Alex Zabrodskiy's Oxford MSc dissertation (2017, supervised by
+Gavin Lowe). Several depth-first searches run at once. A search that reaches a
+vertex owned by another search suspends until that vertex is assigned to a
+component, and searches that end up blocking each other in a cycle are merged by
+moving vertices between their stacks. See [the dissertation](dissertation.pdf)
+for the algorithm, its correctness argument, and the original measurements.
 
-This project was written by Alex Zabrodskiy for an MSc in Computer Science at
-Oxford, supervised by Gavin Lowe. See [the dissertation](dissertation.pdf) for
-the algorithm, proofs, measurements, acknowledgments, and references.
+The library also has a sequential, iterative Tarjan's algorithm, which is the
+baseline for the benchmarks and the reference in the tests.
 
 ## Build and run
 
-Requirements: a C++17 compiler, CMake 3.20 or newer, and a platform thread library.
-CMake downloads one header-only dependency, [moodycamel::ConcurrentQueue](https://github.com/cameron314/concurrentqueue)
-v1.0.4, pinned by SHA-256; to build offline, set
+Requirements: a C++20 compiler, CMake 3.20+, and a thread library. The code has
+been tested with Apple clang 21; CI builds it with GCC on Ubuntu and with Apple
+clang on macOS. CMake downloads one header-only dependency,
+[moodycamel::ConcurrentQueue](https://github.com/cameron314/concurrentqueue)
+v1.0.4, pinned by SHA-256. To build offline, set
 `FETCHCONTENT_SOURCE_DIR_CONCURRENTQUEUE` to a local copy of that release.
-TBB is optional. CMake detects whether the experimental 16-byte atomic entries
-need `libatomic`.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
-./build/parallel_tarjan_demo 8
+./build/ptarjan_demo 8
 ```
 
-The demo finds three components in a small graph:
+The demo finds the three components of a small graph:
 
 ```text
 Strongly connected components (8 workers):
@@ -35,134 +36,193 @@ Strongly connected components (8 workers):
 {5}
 ```
 
-The demo and the library accept any positive number of worker threads. (The
-original scheduler kept one termination bit per worker in a 64-bit word, which
-capped it at 64 workers; it now counts active searches instead.)
-
-See [examples/scc.cpp](examples/scc.cpp) for graph construction, explicit backend
-selection, result ownership, and sorting the output for display.
-
 ## Library use
 
-The existing API is preserved:
+Vertices are numbered `0 .. n-1`. A `Graph` is immutable and stored in
+compressed sparse row form; build it from an edge list or from adjacency lists.
 
 ```cpp
-AdjacencyListGraph<Vid> graph;
-graph.bulkInsertEdges({{1, 2}, {2, 1}, {2, 3}});
+#include "ptarjan/scc.hpp"
 
-SCC_Set* components = Tarjan::multiThreadedTarjan(graph, 4, Sharded_Locked);
-// Inspect the components, then release both levels of owned storage.
-Utility::deleteSCCs(components);
+const std::vector<ptarjan::Edge> edges{{0, 1}, {1, 0}, {1, 2}};
+const ptarjan::Graph graph(3, edges);
+
+ptarjan::Components components = ptarjan::parallelScc(graph, 8); // or sequentialScc(graph)
+for (std::span<const ptarjan::Vertex> component : components) {
+    // ...
+}
 ```
 
-- Use `AdjacencyListGraph` for the supported vector-based neighbor interface.
-- Keep the graph unchanged until the algorithm returns.
-- SCC and vertex ordering is unspecified. Compare partitions after sorting, not
-  by discovery order or component count alone.
-- The legacy result type is `std::vector<std::vector<Vid>*>*`; the caller owns the
-  collection and every component. The demo wraps it in an RAII deleter.
-- `Tarjan::singleThreadedTarjan(graph)` uses an iterative DFS and the same result
-  ownership convention.
+- `parallelScc(graph, threads)` accepts any positive number of threads and
+  defaults to the hardware concurrency.
+- `Components` owns its result: every component is a span into one shared
+  buffer, so a result costs two allocations however many components there are.
+- The order of components, and of vertices within a component, is
+  unspecified. `normalized()` sorts both, so two results can be compared with
+  `==`; `toVectors()` copies the result into nested vectors.
+- If a worker throws (in practice `std::bad_alloc`), the other workers stop and
+  `parallelScc` rethrows the exception.
+- To use graphs whose vertex identifiers are not dense, number them
+  `0 .. n-1` first; `bench/graph_sources.cpp` shows one way.
 
-### Dictionary backends
+Link against the `ptarjan::ptarjan` target, for example after
+`FetchContent_MakeAvailable` or `add_subdirectory`.
 
-`Sharded_Locked` is used by the demo as a straightforward baseline. Other
-research backends remain available through `DictType`. The historical API
-default remains `OpenSharded`, so existing benchmark calls retain their choice.
+## Benchmarks
 
-`OpenSharded` creates 8,192 tables that start with 16 entries each (about
-2 MiB) and grow independently. They previously started with 2,048 entries,
-which zeroed about 256 MiB on every call regardless of graph size.
-
-The dissertation studies lock-free coordination, but an entire run is not
-unconditionally lock-free on every platform: the dictionary choice, allocator,
-queue implementation, and implementation of 16-byte atomics matter. The
-open-addressed table's resize protocol also waits for admitted operations.
-
-To build the optional oneTBB backend with an installed TBB package:
+`ptarjan_bench` times both algorithms on a seeded synthetic graph or a graph
+file, and checks every parallel result against the sequential one:
 
 ```sh
-cmake -S . -B build-tbb -DPARALLEL_TARJAN_ENABLE_TBB=ON
-cmake --build build-tbb --parallel
+./build/ptarjan_bench --graph clusters --vertices 1000000 --threads 1,2,4,8,16 --runs 7
+./build/ptarjan_bench --graph edges:soc-LiveJournal1.txt --threads 8   # SNAP edge list
+./build/ptarjan_bench --help
 ```
 
-Requesting `TBB_Conc` without enabling it throws a descriptive exception.
+The `csp:FILE` format reads the state-space graphs used in the dissertation.
 
-## Concurrency regression tests
+Median times on an 18-core Apple M5 Max, for graphs of one million vertices and
+about four million edges:
 
-The regression suite checks full SCC membership against an independent,
-iterative Kosaraju implementation. It includes empty and disconnected graphs,
-self-loops, duplicate edges, directed bridges, a long chain, seeded random
-graphs, and simultaneous starts at 32, 64, 65 and 128 workers.
+| Graph | Sequential | Parallel, 1 thread | 4 threads | 16 threads |
+| --- | --- | --- | --- | --- |
+| `clusters`: 15,625 components of 64 vertices | 12.8 ms | 25.8 ms | 6.9 ms | 3.7 ms |
+| `random`: one component of 960,670 vertices | 73.1 ms | 154.9 ms | 200.6 ms | 208.1 ms |
+| `dag`: every component a single vertex | 16.7 ms | 29.1 ms | 20.4 ms | 29.3 ms |
 
-Dedicated tests cover the generation-check window during cell reuse, blocked
-list growth and reset, contended tiny-table resizing, and spin-lock publication
-and exception safety. CTest applies timeouts so a hang is reported as a failure.
+With 10 million vertices in clusters of 1,000, the sequential algorithm takes
+143 ms and the parallel one 55 ms on 16 threads. Use no more threads than free
+cores (the default is the hardware thread count). With more, a descheduled
+worker holds up every search waiting on it: at 24 and 36 threads the `dag`
+graph takes four times as long as at 16.
+
+On one thread the parallel algorithm costs about twice as much as the
+sequential one, mostly because of its larger per-vertex state and the
+bookkeeping for suspending and merging searches.
+[The audit, section 11](docs/concurrency-audit.md#11-restructure-around-dense-vertex-identifiers)
+breaks this down, shows where the workers' time goes, and compares the
+dissertation-era code on the same graphs.
+
+Speedup depends heavily on the graph. Clustered graphs, with many medium-sized
+components, give the searches separate work. A graph with one giant component
+does not, because the algorithm merges every search that enters that component
+into one. Nor does a DAG whose searches all run into each other, because each
+must wait for the vertices ahead of it to complete.
+
+## Is it lock-free?
+
+The coordination uses no locks. Claiming a vertex, suspending a search,
+recording it in a vertex's blocked list, detecting and resolving a blocking
+cycle, and the termination count all use atomic operations that finish in a
+bounded number of steps. The pending-search queue is lock-free apart from
+memory allocation.
+
+The algorithm as a whole is not lock-free, as the dissertation notes
+(section 1.2). Only the thread running a search can advance its depth-first
+search. While there are more searches than threads, a stalled thread holds up
+only the searches waiting on its vertices. Near the end of a run, the remaining
+threads can only wait for it, and they poll with a 1 ms sleep. Memory
+allocation can also take locks.
+
+## How this version differs from the dissertation's code
+
+The dissertation's implementation is tagged
+[`dissertation-2017`](https://github.com/azabrod1/ParallelTarjan/tree/dissertation-2017).
+Since then:
+
+- **Dense vertex identifiers.** The original mapped arbitrary vertex
+  identifiers to cells through a concurrent hash table (with seven
+  interchangeable backends), and recycled cells with generation counts and
+  reference counting to halve its memory use. With vertices numbered
+  `0 .. n-1`, each vertex has a 32-byte cell for the whole run. The hash tables, recycling, and
+  reference counting are gone, along with two contended atomic operations per
+  edge.
+- **Termination.** One bit per worker in a 64-bit word was replaced by a count
+  of active searches. The old protocol limited runs to 64 threads and could
+  hang when one idle thread was descheduled; see the audit, section 8.
+- **Correctness fixes.** Generation checks, publication order, a cycle walk
+  that could loop, and several data races; see the audit.
+- **Root blocks.** Workers take blocks of up to 256 root vertices instead of
+  one vertex at a time. This spreads the searches across the graph and removes
+  a shared counter that every worker incremented for every vertex.
+- **Modern C++.** C++20, value-owned results, RAII throughout, `std::jthread`,
+  and a seeded benchmark tool in place of the original driver.
+
+[docs/concurrency-audit.md](docs/concurrency-audit.md) records each defect
+found in the original code, with evidence and measurements.
+
+## Testing
+
+The tests compare every vertex's component with an independent Kosaraju
+implementation. They cover empty graphs, self-loops, duplicate edges, long
+chains and cycles, seeded random graphs, 1 to 128 threads started
+simultaneously, synchronized contention, many searches suspended on one vertex,
+and long runs at 63 to 128 threads on small graphs, where termination problems
+show up. CTest applies timeouts so a hang is reported as a failure.
 
 ```sh
-# Invalid access, leaks, and undefined behavior
-cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
-  -DPARALLEL_TARJAN_SANITIZER=address
+# Invalid memory access and undefined behavior
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DPTARJAN_SANITIZER=address
 cmake --build build-asan --parallel
-ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
-UBSAN_OPTIONS=halt_on_error=1 \
-ctest --test-dir build-asan --output-on-failure
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+  ctest --test-dir build-asan --output-on-failure
 
-# Data races in the core with a mutex-backed pending queue, plus the
-# isolated custom primitives; use a separate build from AddressSanitizer
-cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
-  -DPARALLEL_TARJAN_SANITIZER=thread
+# Data races
+cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DPTARJAN_SANITIZER=thread
 cmake --build build-tsan --parallel
-TSAN_OPTIONS=halt_on_error=1 \
-ctest --test-dir build-tsan --output-on-failure -L tsan-core
+TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-tsan --output-on-failure -L tsan-core
 ```
 
-The `tsan-core` selection tests the SCC algorithm with `MutexDict` and
-`LockedPendingQueue`, plus the cell reference, blocked list, spin lock, and
-open-addressed dictionary regressions. Release and AddressSanitizer run the
-complete suite, including the historical `LockFreePendingQueue`.
+GCC's ThreadSanitizer does not model the atomic fences in the lock-free queue
+([upstream discussion](https://github.com/cameron314/concurrentqueue/issues/146)),
+so CI runs only the `tsan-core` tests, which use a mutex-backed queue. With
+Clang's ThreadSanitizer on macOS the whole suite passes without reports. (On
+macOS, LeakSanitizer is unavailable, so drop `detect_leaks=1`.)
 
-The previously vendored 2016 copy of the concurrent queue produced a GCC
-ThreadSanitizer report during the default-queue contention test. The queue
-uses atomic fences that GCC ThreadSanitizer warns it does not fully model;
-upstream has discussed a closely matching
-[report](https://github.com/cameron314/concurrentqueue/issues/146). The build
-now uses upstream v1.0.4. Clang ThreadSanitizer on macOS reported no races for
-the default configuration in local stress runs, but the GCC result has not been
-re-established, so the CI selection is unchanged. No reports are suppressed.
-To investigate that path, run the ThreadSanitizer suite without the label
-filter.
+### Model checking
 
-Sanitizer coverage is useful evidence, not a proof of deadlock freedom. See
-[the concurrency audit](docs/concurrency-audit.md) for the demonstrated failures,
-exact fixes, and remaining limits.
+`spec/` holds TLA+ models of the scheduler's protocols, checked with TLC
+(`spec/run.sh` downloads TLC, verifies its checksum, and reruns every
+configuration). Within small bounds (2 to 3 workers, 2 to 4 vertices or
+searches), TLC found no counterexample for:
 
-## Historical benchmark
+- **termination**, with root blocks: no worker exits while a search is
+  running, waiting to run, or held in an unexamined block. Every worker
+  exits once every search is done, even if idle workers stall forever;
+- **suspension**: a suspended search is resumed exactly once, never lost, even
+  with stale blocked-list entries, lazily allocated lists, and transfers;
+- **cycle detection**: two threads never resolve overlapping blocking cycles,
+  and no blocking cycle is left unresolved.
 
-The original `Tarjan Code/main.cpp` remains available for comparison with the
-dissertation. It contains local dataset paths and is excluded from the normal
-build. Enable it explicitly if you intend to adapt those paths:
+The original termination protocol fails in the model in three ways,
+including the early exit and the stalled-worker hang the audit describes; the
+counterexample traces are in `spec/results/`. Deliberately broken variants of
+each protocol are caught, so the passes are not vacuous.
+[spec/README.md](spec/README.md) maps each model action to the code and lists
+what the models leave out.
+
+## Development
+
+The sources are formatted with clang-format 23 (`.clang-format`) and checked
+with clang-tidy (`.clang-tidy`):
 
 ```sh
-cmake -S . -B build-legacy -DPARALLEL_TARJAN_BUILD_LEGACY_BENCHMARK=ON
-cmake --build build-legacy --parallel
+clang-format -i include/ptarjan/*.hpp src/*.cpp src/parallel/* bench/* examples/*.cpp tests/*.cpp
+clang-tidy -p build src/*.cpp src/parallel/*.cpp bench/*.cpp examples/*.cpp
 ```
 
-The older `DirectedHashGraph` implementation and historical graph generators
-are not the validated public interface; they need a separate ownership/API
-cleanup before reuse. The original source filenames and dissertation are kept
-so the implementation remains easy to compare with the research.
+Both are available from PyPI (`pip install clang-format clang-tidy`). CI checks
+formatting. `-DPTARJAN_WARNINGS_AS_ERRORS=ON` turns the project's compiler
+warnings into errors.
 
-## Next development steps
-
-1. Preserve these regressions while separating the public API, scheduler,
-   graph representation, benchmarks, and third-party headers.
-2. Add a value-owned SCC result and an immutable compact graph representation.
-3. Model-check the suspension/publication and termination protocols, including
-   stalled threads and reuse; add bounded exploration of external search cycles.
-4. Benchmark graph families and dictionary choices with reproducible seeds,
-   peak memory, medians and tail latency, and verified SCC output.
-5. Then consider C++20 worker lifetime/cancellation and event-driven wakeups,
-   checking the termination proof before changing the scheduler.
+| Path | Contents |
+| --- | --- |
+| `include/ptarjan/` | Public API: `Graph`, `Components`, `sequentialScc`, `parallelScc` |
+| `src/` | The sequential algorithm, graph and result types |
+| `src/parallel/` | The parallel algorithm: cells, searches, workers, suspension, termination |
+| `bench/` | `ptarjan_bench` and its graph generators and file readers |
+| `tests/` | CTest suites |
+| `spec/` | TLA+ models of the scheduler protocols |
+| `docs/` | The concurrency audit |
 
 Contact: alex.zabrodskiy86@gmail.com.
