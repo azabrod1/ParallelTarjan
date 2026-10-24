@@ -452,6 +452,8 @@ private:
         const auto targets = graph.targets();
         moodycamel::ConsumerToken consumer(trimQueue);
         moodycamel::ProducerToken producer(trimQueue);
+        if (!producer.valid()) //Allocation failure leaves the token invalid, not thrown
+            throw std::bad_alloc();
         std::vector<Vertex> stack(TAKE);
         auto& removed = trimmed[id];
 

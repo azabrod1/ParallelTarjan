@@ -1,4 +1,7 @@
-cmake_minimum_required(VERSION 3.20)
+# The policy range makes CMake 3.24 and later set the timestamps of the fetched
+# archive's files to the extraction time (CMP0135) without an option that CMake
+# 3.20 to 3.23 would reject.
+cmake_minimum_required(VERSION 3.20...3.28)
 project(ParallelTarjan VERSION 0.2.0 LANGUAGES CXX)
 
 include(CTest)
@@ -34,7 +37,6 @@ endif()
 FetchContent_Declare(concurrentqueue
     URL https://github.com/cameron314/concurrentqueue/archive/refs/tags/v1.0.4.tar.gz
     URL_HASH SHA256=87fbc9884d60d0d4bf3462c18f4c0ee0a9311d0519341cac7cbd361c885e5281
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     # Only the header is needed; skip the upstream build and install rules.
     SOURCE_SUBDIR header-only
 )

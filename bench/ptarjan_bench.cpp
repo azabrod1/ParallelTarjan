@@ -4,7 +4,11 @@
 //   ptarjan_bench --graph clusters --vertices 1000000 --threads 1,2,4,8 --runs 7
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <climits>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -49,11 +53,41 @@ struct Options {
     std::exit(exitCode);
 }
 
-unsigned long parseNumber(const std::string& text, const std::string& option) {
+// A whole number from 0 to maximum. Checked before any narrowing: the values go
+// into Vertex, unsigned and int fields, and a count beyond their range would
+// otherwise wrap silently.
+std::uint64_t parseNumber(const std::string& text, const std::string& option,
+                          std::uint64_t maximum) {
+    bool valid = !text.empty() && std::all_of(text.begin(), text.end(),
+                                              [](unsigned char c) { return std::isdigit(c) != 0; });
+    std::uint64_t value = 0;
+    if (valid) {
+        try {
+            value = std::stoull(text);
+            valid = value <= maximum;
+        } catch (const std::out_of_range&) {
+            valid = false;
+        }
+    }
+    if (!valid)
+        throw std::invalid_argument(option + " must be a whole number from 0 to " +
+                                    std::to_string(maximum) + ", not " + text);
+    return value;
+}
+
+// The generators convert the degree to int for their loops and multiply it by
+// the vertex count for a size_t, so it must be finite, non-negative and bounded.
+double parseDegree(const std::string& text) {
     std::size_t consumed = 0;
-    const unsigned long value = std::stoul(text, &consumed);
-    if (consumed != text.size())
-        throw std::invalid_argument("bad value for " + option + ": " + text);
+    double value = 0;
+    try {
+        value = std::stod(text, &consumed);
+    } catch (const std::logic_error&) { // invalid_argument or out_of_range
+        consumed = 0;
+    }
+    if (consumed != text.size() || !std::isfinite(value) || value < 0 || value > INT_MAX)
+        throw std::invalid_argument("--degree must be a number from 0 to " +
+                                    std::to_string(INT_MAX) + ", not " + text);
     return value;
 }
 
@@ -71,13 +105,15 @@ Options parseOptions(int argumentCount, char** arguments) {
         } else if (option == "--graph") {
             options.graph.family = value();
         } else if (option == "--vertices") {
-            options.graph.vertices = static_cast<Vertex>(parseNumber(value(), option));
+            options.graph.vertices =
+                static_cast<Vertex>(parseNumber(value(), option, Graph::MAX_VERTICES));
         } else if (option == "--degree") {
-            options.graph.degree = std::stod(value());
+            options.graph.degree = parseDegree(value());
         } else if (option == "--cluster-size") {
-            options.graph.clusterSize = static_cast<Vertex>(parseNumber(value(), option));
+            options.graph.clusterSize =
+                static_cast<Vertex>(parseNumber(value(), option, Graph::MAX_VERTICES));
         } else if (option == "--seed") {
-            options.graph.seed = parseNumber(value(), option);
+            options.graph.seed = parseNumber(value(), option, UINT64_MAX);
         } else if (option == "--algorithms") {
             options.algorithms.clear();
             const std::string list = value();
@@ -94,14 +130,14 @@ Options parseOptions(int argumentCount, char** arguments) {
             const std::string list = value();
             for (std::size_t start = 0; start <= list.size();) {
                 const std::size_t comma = std::min(list.find(',', start), list.size());
-                options.threads.push_back(
-                    static_cast<unsigned>(parseNumber(list.substr(start, comma - start), option)));
+                options.threads.push_back(static_cast<unsigned>(
+                    parseNumber(list.substr(start, comma - start), option, UINT_MAX)));
                 start = comma + 1;
             }
         } else if (option == "--runs") {
-            options.runs = static_cast<int>(parseNumber(value(), option));
+            options.runs = static_cast<int>(parseNumber(value(), option, INT_MAX));
         } else if (option == "--warmups") {
-            options.warmups = static_cast<int>(parseNumber(value(), option));
+            options.warmups = static_cast<int>(parseNumber(value(), option, INT_MAX));
         } else if (option == "--no-verify") {
             options.verify = false;
         } else if (option == "--csv") {
@@ -113,6 +149,13 @@ Options parseOptions(int argumentCount, char** arguments) {
     }
     if (options.runs < 1)
         throw std::invalid_argument("--runs must be at least 1");
+    if (std::any_of(options.threads.begin(), options.threads.end(),
+                    [](unsigned threads) { return threads == 0; }))
+        throw std::invalid_argument("--threads values must be at least 1");
+    // Beyond 2^53 a double no longer holds every integer, and the generators
+    // convert this product to size_t.
+    if (options.graph.degree * static_cast<double>(options.graph.vertices) > 9007199254740992.0)
+        throw std::invalid_argument("--degree times --vertices is too many edges");
     return options;
 }
 

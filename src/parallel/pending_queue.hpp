@@ -43,7 +43,12 @@ class LockFreePendingQueue final : public PendingQueue {
         moodycamel::ProducerToken producer;
         moodycamel::ConsumerToken consumer;
         explicit Tokens(moodycamel::ConcurrentQueue<Search*>& queue)
-            : producer(queue), consumer(queue) {}
+            : producer(queue), consumer(queue) {
+            //A producer token whose allocation failed is invalid, not an exception, and
+            //passing it to the queue dereferences null
+            if (!producer.valid())
+                throw std::bad_alloc();
+        }
     };
     std::vector<std::unique_ptr<Tokens>> tokens; //Destroyed before the queue they refer to
 
