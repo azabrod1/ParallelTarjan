@@ -105,8 +105,7 @@ public:
           inDegree(std::make_unique<std::atomic<std::uint32_t>[]>(n)),
           outDegree(std::make_unique<std::atomic<std::uint32_t>[]>(n)),
           inOffsets(n + std::size_t{1}), trimmed(workers), nextFrontiers(workers),
-          giantParts(workers), pivotCandidates(workers), roots(n, workers),
-          engine(input, workers, pending, roots), barrier(workers) {}
+          giantParts(workers), pivotCandidates(workers), roots(n, workers), barrier(workers) {}
 
     Components run() {
         //Threads wait at a start gate until all of them exist, so that a thread that fails to
@@ -132,7 +131,7 @@ public:
         if (failure)
             std::rethrow_exception(failure);
 
-        const Components rest = engine.run();
+        const Components rest = engine ? engine->run() : Components();
 
         std::vector<Vertex> vertices;
         vertices.reserve(n);
@@ -204,7 +203,10 @@ private:
 
     detail::LockFreePendingQueue pending{threadCount};
     detail::VertexOrderRoots roots;
-    detail::ParallelTarjan engine;
+    //Created only if the breadth-first phases leave vertices: its cells take 32 bytes a
+    //vertex, and when trimming or the forward-backward search finishes the graph, as on a
+    //DAG, the engine would only mark every cell complete and then scan them all for roots
+    std::optional<detail::ParallelTarjan> engine;
 
     static constexpr int WAIT = 0, GO = 1, CANCEL = 2;
 
@@ -433,9 +435,20 @@ private:
 
         // Hand the rest to the Tarjan engine: removed vertices count as complete.
         phase([&] {
+            if (id != 0)
+                return;
+            std::size_t removed = 0;
+            for (unsigned thread = 0; thread < threadCount; ++thread)
+                removed += trimmed[thread].size() + giantParts[thread].size();
+            if (removed < n)
+                engine.emplace(graph, threadCount, pending, roots);
+        });
+        phase([&] {
+            if (!engine)
+                return;
             for (std::size_t v = first; v < last; ++v)
                 if (state[v].load(std::memory_order_relaxed) == REMOVED)
-                    engine.excludeVertex(static_cast<Vertex>(v));
+                    engine->excludeVertex(static_cast<Vertex>(v));
         });
     }
 

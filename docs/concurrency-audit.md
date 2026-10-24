@@ -697,6 +697,28 @@ parallel Tarjan in the same benchmark process. The edge scatter used to build th
 reverse graph is sorted in place bucket by bucket and freed before the Tarjan
 phase; before that change the peak was 2.1 GB.
 
+**Creating the Tarjan engine only when it has work.** A review of the pull
+request pointed out that the engine was built before the breadth-first phases,
+so its 32-byte cells were allocated, marked complete one by one and scanned for
+roots even when trimming or the forward-backward search had removed every
+vertex. The engine is now created after those phases, and only if vertices
+remain. Medians of five interleaved batches at 16 threads, each the median of 7
+runs:
+
+| Graph | Engine built first | Engine built when needed |
+| --- | --- | --- |
+| `random`, 1M vertices | 19.4 ms | 18.3 ms (-5.4%) |
+| `dag`, 1M vertices | 18.6 ms | 17.8 ms (-4.3%) |
+| `clusters`, 1M vertices | 7.8 ms | 7.7 ms (no change beyond noise, over ten batches) |
+| `clusters`, 10M vertices | 116 ms | 116 ms |
+
+On `random` every vertex outside the giant component is a component by itself,
+so trimming and the forward-backward search remove them all and the engine is
+skipped there as well as on `dag`. Peak memory on a 10M-vertex DAG fell only
+from 1,640 MB to 1,603 MB, much less than the 320 MB the cells take; why the
+cells added so little to the peak was not investigated. The README's tables
+predate this change.
+
 **Validation.** All 9 CTest cases pass in release, AddressSanitizer +
 UndefinedBehaviorSanitizer and ThreadSanitizer builds (the last with no
 reports), and in nine concurrent AddressSanitizer suites. The stress harness
