@@ -321,4 +321,10 @@ charts from `docs/benchmarks/results.csv`, which uses the column layout of
 | `docs/` | The concurrency audit |
 | `docs/benchmarks/` | Benchmark results and the script that draws the charts from them |
 
+## License
+
+Copyright © 2017–2026 Alex Zabrodskiy. The code is available under the
+[Elastic License 2.0](LICENSE): you may use, copy, modify and redistribute it,
+but you may not offer it to others as a hosted or managed service.
+
 Contact: alex.zabrodskiy86@gmail.com.
