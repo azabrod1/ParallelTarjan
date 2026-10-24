@@ -1,0 +1,41 @@
+State 1 Initial
+    hand = (w1 :> {} @@ w2 :> {} @@ w3 :> {})
+    active = 0
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    stalled = (w1 :> FALSE @@ w2 :> FALSE @@ w3 :> FALSE)
+    sst = <<"none", "none", "none">>
+    cur = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    index = 0
+    bc = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "pend" @@ w2 :> "pend" @@ w3 :> "pend")
+    pending = {}
+    vstat = <<"new", "new", "new">>
+    waits = <<0, 0, 0>>
+    hk = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    examined = {}
+    rnext = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    rend = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    budget = 2
+State 2 GetPendingNone
+    pc = (w1 :> "empty" @@ w2 :> "pend" @@ w3 :> "pend")
+State 3 IsEmpty
+    pc = (w1 :> "chunk" @@ w2 :> "pend" @@ w3 :> "pend")
+State 4 NextChunk
+    index = 2
+    pc = (w1 :> "inc" @@ w2 :> "pend" @@ w3 :> "pend")
+    rend = (w1 :> 2 @@ w2 :> 0 @@ w3 :> 0)
+State 5 GetPendingNone
+    pc = (w1 :> "inc" @@ w2 :> "empty" @@ w3 :> "pend")
+State 6 IsEmpty
+    pc = (w1 :> "inc" @@ w2 :> "chunk" @@ w3 :> "pend")
+State 7 GetPendingNone
+    pc = (w1 :> "inc" @@ w2 :> "chunk" @@ w3 :> "empty")
+State 8 NextChunk
+    index = 3
+    pc = (w1 :> "inc" @@ w2 :> "inc" @@ w3 :> "empty")
+    rnext = (w1 :> 0 @@ w2 :> 2 @@ w3 :> 0)
+    rend = (w1 :> 2 @@ w2 :> 3 @@ w3 :> 0)
+State 9 IsEmpty
+    pc = (w1 :> "inc" @@ w2 :> "inc" @@ w3 :> "load")
+State 10 LoadActive
+    pc = (w1 :> "inc" @@ w2 :> "inc" @@ w3 :> "done")

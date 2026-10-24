@@ -1,0 +1,48 @@
+config                                       expected        match        verdict                                    | states | depth | wall | TLC workers
+Termination                                  pass            as expected  PASS                                       | 1688959 gen, 465864 distinct | depth 51 | 37s | 2w
+Termination_stall                            pass            as expected  PASS                                       | 2260093 gen, 634173 distinct | depth 52 | 51s | 2w
+Termination_stall_big                        pass            as expected  PASS                                       | 7364696 gen, 1925081 distinct | depth 63 | 19s | 2w
+Termination_mut_enqueue                      fail(mutation)  as expected  FAIL: Invariant NoEarlyExit violated       | 115984 gen, 39432 distinct | depth 22 | 1s | 2w
+Termination_mut_take                         fail(mutation)  as expected  FAIL: Invariant NoEarlyExit violated       | 1991 gen, 756 distinct | depth 10 | 1s | 2w
+Termination_stall_big_live                   pass            -            not run (long; LONG=1)
+TerminationBlocks                            pass            as expected  PASS                                       | 3999439 gen, 1145536 distinct | depth 54 | 91s | 2w
+TerminationBlocks_c1                         pass            as expected  PASS                                       | 3255947 gen, 935781 distinct | depth 58 | 11s | 2w
+TerminationBlocks_big                        pass            as expected  PASS                                       | 4464694 gen, 1243498 distinct | depth 60 | 15s | 2w
+TerminationBlocks_mut_count                  fail(mutation)  as expected  FAIL: Invariant NoEarlyExit violated       | 624 gen, 231 distinct | depth 10 | 1s | 2w
+TerminationBlocks_c1_live                    pass            -            not run (long; LONG=1)
+TerminationFlags_safety                      fail(old)       as expected  FAIL: Invariant NoEarlyExit violated       | 278515 gen, 94635 distinct | depth 24 | 1s | 2w
+TerminationFlags_stalebit                    fail(old)       as expected  FAIL: Invariant NoStaleBit violated        | 8628 gen, 3656 distinct | depth 15 | 1s | 2w
+TerminationFlags_live                        fail(old)       as expected  FAIL: temporal property violated           | 2351359 gen, 692580 distinct | - | 18s | 2w
+TerminationFlags_stall                       fail(old)       as expected  FAIL: temporal property violated           | 3119962 gen, 923565 distinct | - | 23s | 2w
+TerminationFlags_stall_only                  fail(old)       as expected  FAIL: temporal property violated           | 21115 gen, 7086 distinct | - | 1s | 2w
+TerminationFlags_nostall_small               pass            as expected  PASS                                       | 14284 gen, 4797 distinct | depth 34 | 1s | 2w
+TerminationFlags_alldone                     pass            as expected  PASS                                       | 2351359 gen, 692580 distinct | depth 58 | 4s | 2w
+TerminationFlags_overapprox                  fail(old)       as expected  FAIL: Invariant NoEarlyExit violated       | 115584 gen, 40980 distinct | depth 20 | 1s | 2w
+Suspension                                   pass            as expected  PASS                                       | 12351519 gen, 4520904 distinct | depth 61 | 30s | 2w
+Suspension_b9d4                              pass            as expected  PASS                                       | 10935699 gen, 4015988 distinct | depth 55 | 26s | 2w
+Suspension_sep                               pass            as expected  PASS                                       | 79246969 gen, 23632539 distinct | depth 62 | 195s | 2w
+Suspension_big                               pass            as expected  PASS                                       | 69850783 gen, 25956620 distinct | depth 77 | 159s | 2w
+Suspension_live                              pass            as expected  PASS                                       | 1381021 gen, 537362 distinct | depth 57 | 67s | 2w
+Suspension_mut_norecheck                     fail(mutation)  as expected  FAIL: Invariant NoLostWakeup violated      | 19199 gen, 7712 distinct | depth 14 | ?s | 18w
+Suspension_mut_blind                         fail(mutation)  as expected  FAIL: Invariant NoDoubleResume violated    | 30131 gen, 12293 distinct | depth 15 | ?s | 18w
+Suspension_mut_checkthenstore                fail(mutation)  as expected  FAIL: Invariant NoDoubleResume violated    | 117207 gen, 49202 distinct | depth 18 | ?s | 18w
+Suspension_mut_relaxed                       fail(mutation)  as expected  FAIL: Invariant NoLostWakeup violated      | 161343 gen, 61068 distinct | depth 18 | ?s | 18w
+Suspension_cover_W_StaleEntryCas             fail(witness)   as expected  FAIL: Invariant W_StaleEntryCas violated   | 23262 gen, 9425 distinct | depth 14 | ?s | 18w
+Suspension_cover_W_TwoEntriesOneSuspension   fail(witness)   as expected  FAIL: Invariant W_TwoEntriesOneSuspension violated | 55575 gen, 22990 distinct | depth 17 | ?s | 18w
+Suspension_cover_W_CasRace                   fail(witness)   as expected  FAIL: Invariant W_CasRace violated         | 58494 gen, 24298 distinct | depth 17 | ?s | 18w
+Suspension_cover_W_NullListRace              fail(witness)   as expected  FAIL: Invariant W_NullListRace violated    | 1242 gen, 650 distinct | depth 9 | ?s | 18w
+Suspension_cover_W_TransferBeforeRecheck     fail(witness)   as expected  FAIL: Invariant W_TransferBeforeRecheck violated | 9269 gen, 3790 distinct | depth 12 | ?s | 18w
+CycleDetection_n2                            pass            as expected  PASS                                       | 82735 gen, 42104 distinct | depth 83 | ?s | 8w
+CycleDetection_n3c1                          pass            as expected  PASS                                       | 1996083 gen, 695297 distinct | depth 97 | ?s | 2w
+CycleDetection_n3_full                       pass            as expected  PASS                                       | 89924444 gen, 30409862 distinct | depth 113 | 92s | 18w
+CycleDetection_n2_b9d4                       pass            as expected  PASS                                       | 97051 gen, 49289 distinct | depth 89 | 2s | 2w
+CycleDetection_n3c1_b9d4                     pass            as expected  PASS                                       | 2558300 gen, 888076 distinct | depth 106 | 43s | 2w
+CycleDetection_mut_noconsensus               fail(mutation)  as expected  FAIL: Invariant OneResolver violated       | 23376 gen, 12764 distinct | depth 38 | ?s | 8w
+CycleDetection_mut_walkfirst                 fail(mutation)  as expected  FAIL: Invariant NoStuckCycle violated      | 3598 gen, 1984 distinct | depth 19 | ?s | 8w
+CycleDetection_mut_nosecondpass              fail(mutation)  as expected  FAIL: Invariant MembersFrozen violated     | 2628461 gen, 1002949 distinct | depth 28 | ?s | 8w
+CycleDetection_n2_cover_W_Resolves           fail(witness)   as expected  FAIL: Invariant W_Resolves violated        | 7377 gen, 4091 distinct | depth 23 | ?s | 8w
+CycleDetection_n2_cover_W_ConcurrentDetect   fail(witness)   as expected  FAIL: Invariant W_ConcurrentDetect violated | 20736 gen, 11386 distinct | depth 36 | ?s | 8w
+CycleDetection_cover_W_Resolves              fail(witness)   as expected  FAIL: Invariant W_Resolves violated        | 1077940 gen, 410443 distinct | depth 23 | ?s | 8w
+CycleDetection_cover_W_ConcurrentDetect      fail(witness)   as expected  FAIL: Invariant W_ConcurrentDetect violated | 7751655 gen, 2883635 distinct | depth 35 | ?s | 8w
+CycleDetection_cover_W_OddAge                fail(witness)   as expected  FAIL: Invariant W_OddAge violated          | 1955119 gen, 745001 distinct | depth 26 | ?s | 8w
+CycleDetection_cover_W_BlockedOnResolver     fail(witness)   as expected  FAIL: Invariant W_BlockedOnResolver violated | 2209896 gen, 841277 distinct | depth 26 | ?s | 8w

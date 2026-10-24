@@ -1,0 +1,11 @@
+/build/
+/build-*/
+/CMakeUserPresets.json
+*.o
+*.a
+*.dSYM/
+
+# TLC working state, the downloaded model checker and full outputs (spec/run.sh)
+/spec/states/
+/spec/tools/
+/spec/results/*.out

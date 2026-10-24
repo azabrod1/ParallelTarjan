@@ -1,0 +1,85 @@
+State 1 Initial
+    hand = (w1 :> {} @@ w2 :> {} @@ w3 :> {})
+    qIdx = 0
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    stalled = (w1 :> FALSE @@ w2 :> FALSE @@ w3 :> FALSE)
+    sst = <<"none">>
+    cur = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "clear" @@ w2 :> "clear" @@ w3 :> "clear")
+    flags = {}
+    pending = {}
+    asap = (w1 :> TRUE @@ w2 :> TRUE @@ w3 :> TRUE)
+    waits = <<0>>
+    budget = 0
+State 2 Clear
+    pc = (w1 :> "clear" @@ w2 :> "clear" @@ w3 :> "pend")
+State 3 Clear
+    pc = (w1 :> "pend" @@ w2 :> "clear" @@ w3 :> "pend")
+State 4 Clear
+    pc = (w1 :> "pend" @@ w2 :> "pend" @@ w3 :> "pend")
+State 5 GetPending
+    pc = (w1 :> "pend" @@ w2 :> "pend" @@ w3 :> "next")
+State 6 GetPending
+    pc = (w1 :> "next" @@ w2 :> "pend" @@ w3 :> "next")
+State 7 GetPending
+    pc = (w1 :> "next" @@ w2 :> "next" @@ w3 :> "next")
+State 8 NextRoot
+    qIdx = 1
+    root = (w1 :> 1 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "claim" @@ w2 :> "next" @@ w3 :> "next")
+State 9 Claim
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    sst = <<"run">>
+    cur = (w1 :> 1 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "next" @@ w3 :> "next")
+State 10 NextRoot
+    pc = (w1 :> "exec" @@ w2 :> "setbit" @@ w3 :> "next")
+State 11 Finish
+    sst = <<"done">>
+    cur = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "clear" @@ w2 :> "setbit" @@ w3 :> "next")
+State 12 NextRoot
+    pc = (w1 :> "clear" @@ w2 :> "setbit" @@ w3 :> "setbit")
+State 13 SetBit
+    pc = (w1 :> "clear" @@ w2 :> "setbit" @@ w3 :> "chk")
+    flags = {w3}
+    asap = (w1 :> TRUE @@ w2 :> TRUE @@ w3 :> FALSE)
+State 14 Check
+    pc = (w1 :> "clear" @@ w2 :> "setbit" @@ w3 :> "sleep")
+State 15 Clear
+    pc = (w1 :> "pend" @@ w2 :> "setbit" @@ w3 :> "sleep")
+    flags = {}
+State 16 Stall
+    stalled = (w1 :> FALSE @@ w2 :> FALSE @@ w3 :> TRUE)
+State 17 SetBit
+    pc = (w1 :> "pend" @@ w2 :> "chk" @@ w3 :> "sleep")
+    flags = {w2}
+    asap = (w1 :> TRUE @@ w2 :> FALSE @@ w3 :> FALSE)
+State 18 GetPending
+    pc = (w1 :> "next" @@ w2 :> "chk" @@ w3 :> "sleep")
+State 19 NextRoot
+    pc = (w1 :> "setbit" @@ w2 :> "chk" @@ w3 :> "sleep")
+State 20 SetBit
+    pc = (w1 :> "chk" @@ w2 :> "chk" @@ w3 :> "sleep")
+    flags = {w1, w2}
+    asap = (w1 :> FALSE @@ w2 :> FALSE @@ w3 :> FALSE)
+State 21 Check
+    pc = (w1 :> "chk" @@ w2 :> "sleep" @@ w3 :> "sleep")
+State 22 Check
+    pc = (w1 :> "sleep" @@ w2 :> "sleep" @@ w3 :> "sleep")
+State 23 Sleep
+    pc = (w1 :> "sleep" @@ w2 :> "pend" @@ w3 :> "sleep")
+State 24 GetPending
+    pc = (w1 :> "sleep" @@ w2 :> "next" @@ w3 :> "sleep")
+State 25 Sleep
+    pc = (w1 :> "pend" @@ w2 :> "next" @@ w3 :> "sleep")
+State 26 GetPending
+    pc = (w1 :> "next" @@ w2 :> "next" @@ w3 :> "sleep")
+State 27 NextRoot
+    pc = (w1 :> "setbit" @@ w2 :> "next" @@ w3 :> "sleep")
+State 28 SetBit
+    pc = (w1 :> "chk" @@ w2 :> "next" @@ w3 :> "sleep")
+State 29 NextRoot
+    pc = (w1 :> "chk" @@ w2 :> "setbit" @@ w3 :> "sleep")
+State 30 SetBit
+    pc = (w1 :> "chk" @@ w2 :> "chk" @@ w3 :> "sleep")

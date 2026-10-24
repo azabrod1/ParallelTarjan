@@ -1,0 +1,56 @@
+State 1 Initial
+    hand = (w1 :> {} @@ w2 :> {} @@ w3 :> {})
+    qIdx = 0
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    stalled = (w1 :> FALSE @@ w2 :> FALSE @@ w3 :> FALSE)
+    sst = <<"none", "none", "none">>
+    cur = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "clear" @@ w2 :> "clear" @@ w3 :> "clear")
+    flags = {}
+    pending = {}
+    asap = (w1 :> TRUE @@ w2 :> TRUE @@ w3 :> TRUE)
+    waits = <<0, 0, 0>>
+    budget = 3
+State 2 Clear
+    pc = (w1 :> "pend" @@ w2 :> "clear" @@ w3 :> "clear")
+State 3 GetPending
+    pc = (w1 :> "next" @@ w2 :> "clear" @@ w3 :> "clear")
+State 4 NextRoot
+    qIdx = 1
+    root = (w1 :> 1 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "claim" @@ w2 :> "clear" @@ w3 :> "clear")
+State 5 Claim
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    sst = <<"run", "none", "none">>
+    cur = (w1 :> 1 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "clear" @@ w3 :> "clear")
+State 6 Clear
+    pc = (w1 :> "exec" @@ w2 :> "pend" @@ w3 :> "clear")
+State 7 GetPending
+    pc = (w1 :> "exec" @@ w2 :> "next" @@ w3 :> "clear")
+State 8 NextRoot
+    qIdx = 2
+    root = (w1 :> 0 @@ w2 :> 2 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "claim" @@ w3 :> "clear")
+State 9 Claim
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "setbit" @@ w3 :> "clear")
+State 10 SetBit
+    pc = (w1 :> "exec" @@ w2 :> "chk" @@ w3 :> "clear")
+    flags = {w2}
+    asap = (w1 :> TRUE @@ w2 :> FALSE @@ w3 :> TRUE)
+State 11 Check
+    pc = (w1 :> "exec" @@ w2 :> "sleep" @@ w3 :> "clear")
+State 12 Sleep
+    pc = (w1 :> "exec" @@ w2 :> "pend" @@ w3 :> "clear")
+State 13 GetPending
+    pc = (w1 :> "exec" @@ w2 :> "next" @@ w3 :> "clear")
+State 14 NextRoot
+    qIdx = 3
+    root = (w1 :> 0 @@ w2 :> 3 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "claim" @@ w3 :> "clear")
+State 15 Claim
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    sst = <<"run", "none", "run">>
+    cur = (w1 :> 1 @@ w2 :> 3 @@ w3 :> 0)
+    pc = (w1 :> "exec" @@ w2 :> "exec" @@ w3 :> "clear")

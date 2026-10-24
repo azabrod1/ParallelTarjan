@@ -1,0 +1,34 @@
+State 1 Initial
+    hand = (w1 :> {} @@ w2 :> {} @@ w3 :> {})
+    active = 0
+    qIdx = 0
+    root = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    stalled = (w1 :> FALSE @@ w2 :> FALSE @@ w3 :> FALSE)
+    sst = <<"none", "none", "none">>
+    cur = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "pend" @@ w2 :> "pend" @@ w3 :> "pend")
+    pending = {}
+    waits = <<0, 0, 0>>
+    hk = (w1 :> 0 @@ w2 :> 0 @@ w3 :> 0)
+    budget = 3
+State 2 GetPendingNone
+    pc = (w1 :> "empty" @@ w2 :> "pend" @@ w3 :> "pend")
+State 3 IsEmpty
+    pc = (w1 :> "next" @@ w2 :> "pend" @@ w3 :> "pend")
+State 4 NextRoot
+    qIdx = 1
+State 5 NextRoot
+    qIdx = 2
+State 6 NextRoot
+    qIdx = 3
+    root = (w1 :> 3 @@ w2 :> 0 @@ w3 :> 0)
+    pc = (w1 :> "inc" @@ w2 :> "pend" @@ w3 :> "pend")
+State 7 GetPendingNone
+    pc = (w1 :> "inc" @@ w2 :> "empty" @@ w3 :> "pend")
+State 8 IsEmpty
+    pc = (w1 :> "inc" @@ w2 :> "load" @@ w3 :> "pend")
+State 9 LoadActive
+    pc = (w1 :> "inc" @@ w2 :> "done" @@ w3 :> "pend")
+State 10 Inc
+    active = 1
+    pc = (w1 :> "claim" @@ w2 :> "done" @@ w3 :> "pend")
