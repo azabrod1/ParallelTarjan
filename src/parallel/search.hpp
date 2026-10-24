@@ -1,11 +1,3 @@
-//
-//  search.hpp
-//  Tarjan
-//
-//  Created by Alex Zabrodskiy on 4/26/17.
-//  Copyright © 2017 Alex Zabrodskiy. All rights reserved.
-//
-
 #ifndef PTARJAN_SEARCH_HPP
 #define PTARJAN_SEARCH_HPP
 
@@ -23,16 +15,14 @@ using ControlStack = std::vector<Cell*>;
 class Worker;
 
 class Search {
-
-private:
     std::atomic<Cell*> cellBlockedOn{nullptr};
     TarjanStack tarjanStack;
-    ControlStack controlStack; //Simulates the call stack to avoid recursion
+    ControlStack controlStack; // Simulates the call stack to avoid recursion
     Vertex cellCount{0};
 
 public:
-    //Even while the search is idle; odd while a thread resolves a blocking cycle through it.
-    //Grows by 2 each time the Search object is reused, so a stale view of it can be detected
+    // Even while the search is idle; odd while a thread resolves a blocking cycle through it.
+    // Grows by 2 each time the Search object is reused, so a stale view of it can be detected.
     std::atomic<std::uint32_t> age{0};
 
     Search() = default;
@@ -43,34 +33,29 @@ public:
 
     TarjanStack& getTS() { return tarjanStack; }
 
-    void setRoot(Cell* const root) { pushToStacks(root); }
+    void suspendOn(Cell* const cell) { cellBlockedOn = cell; }
 
-    void suspendOn(Cell* const _cell) { cellBlockedOn = _cell; }
-
-    /*We use a compare and exchange when the search may have become blocked on a new cell before the function call
-     *This can happen if the search resumes before an unsuspend finishes */
-    bool removeCellBlockedOnWithCompareExchange(Cell* blockedOn) {
+    // Clears the blocking cell if it is still blockedOn. The search may have suspended on
+    // another cell since, if it was resumed before the caller got here.
+    [[nodiscard]] bool tryClearBlockedOn(Cell* blockedOn) {
         return cellBlockedOn.compare_exchange_strong(blockedOn, nullptr);
     }
 
-    //use only when you are sure there will not be race condition, otherwise use the one above.
-    void removeCellBlockedOn() { cellBlockedOn = nullptr; }
+    // Only for a search that no other thread can resume meanwhile.
+    void clearBlockedOn() { cellBlockedOn = nullptr; }
+
+    Cell* blockedOn() const { return cellBlockedOn; }
 
     Cell* tarjanStackTop() const { return tarjanStack.back(); }
 
     Cell* controlStackTop() const { return controlStack.back(); }
 
-    bool controlStackEmpty() const { return controlStack.empty(); }
-
     void controlStackPop() { controlStack.pop_back(); }
 
     void tarjanStackPop() { tarjanStack.pop_back(); }
 
-    Cell* getBlockingCell() const { return cellBlockedOn; }
-
+    // Prepares the object for reuse; the new age tells it apart from its earlier life.
     void reset() {
-        //Increment 'age' counter to prevent the search being confused with one
-        //from an earlier lifetime
         cellCount = 0;
         age += 2;
     }

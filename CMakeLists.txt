@@ -66,7 +66,7 @@ add_library(ptarjan
 add_library(ptarjan::ptarjan ALIAS ptarjan)
 target_include_directories(ptarjan
     PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    PRIVATE src/parallel)
+    PRIVATE src src/parallel)
 target_compile_features(ptarjan PUBLIC cxx_std_20)
 target_link_libraries(ptarjan
     PUBLIC Threads::Threads
@@ -83,7 +83,7 @@ endif()
 if(BUILD_TESTING)
     # The tests drive the parallel scheduler directly, so they see its internal headers.
     add_library(ptarjan_internals INTERFACE)
-    target_include_directories(ptarjan_internals INTERFACE src/parallel)
+    target_include_directories(ptarjan_internals INTERFACE src src/parallel)
     target_link_libraries(ptarjan_internals INTERFACE ptarjan ptarjan_concurrentqueue)
 
     add_executable(ptarjan_tests tests/scc_tests.cpp)

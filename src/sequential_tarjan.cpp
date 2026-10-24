@@ -1,19 +1,10 @@
-//
-//  sequential_tarjan.cpp
-//  Tarjan
-//
-//  Created by Alex Zabrodskiy on 4/28/17.
-//  Copyright © 2017 Alex Zabrodskiy. All rights reserved.
-//
-
 #include <algorithm>
 #include <limits>
 #include <utility>
 #include <vector>
 
+#include "components_builder.hpp"
 #include "ptarjan/scc.hpp"
-
-//   **** Iterative Single threaded Tarjan's algorithm implementation
 
 namespace ptarjan {
 
@@ -33,9 +24,8 @@ Components sequentialScc(const Graph& graph) {
     std::vector<Vertex> tarjanStack;
     Vertex cellCount = 0;
 
-    std::vector<Vertex> sccVertices;
-    sccVertices.reserve(vertexCount);
-    std::vector<std::size_t> sccOffsets{0};
+    detail::ComponentsBuilder components;
+    components.reserve(vertexCount);
 
     auto conquer = [&](Vertex vertex) {
         index[vertex] = rank[vertex] = cellCount++;
@@ -46,27 +36,26 @@ Components sequentialScc(const Graph& graph) {
     for (Vertex root = 0; root < vertexCount; ++root) {
         if (index[root] != UNVISITED)
             continue;
-        conquer(root); // Add the root of the search to the stack
+        conquer(root);
 
         while (!controlStack.empty()) {
             const auto [curr, nextEdge] = controlStack.back();
 
-            // Curr might have more neighbors not yet assigned to an SCC
+            // Follow curr's next edge, if it has one left.
             if (nextEdge != offsets[curr + 1]) {
                 ++controlStack.back().second;
                 const Vertex child = targets[nextEdge];
 
-                if (index[child] == UNVISITED) // Not yet on stack nor assigned to an SCC
+                if (index[child] == UNVISITED)
                     conquer(child);
                 else if (index[child] != COMPLETE) // On the stack
                     rank[curr] = std::min(rank[curr], index[child]);
                 continue;
             }
 
-            // curr has no more neighbors left to explore
+            // Every edge of curr followed: backtrack.
             controlStack.pop_back();
 
-            // Update rank of the node that linked to curr
             if (!controlStack.empty()) {
                 const Vertex parent = controlStack.back().first;
                 rank[parent] = std::min(rank[parent], rank[curr]);
@@ -78,14 +67,14 @@ Components sequentialScc(const Graph& graph) {
                     member = tarjanStack.back();
                     tarjanStack.pop_back();
                     index[member] = COMPLETE;
-                    sccVertices.push_back(member);
+                    components.add(member);
                 } while (member != curr);
-                sccOffsets.push_back(sccVertices.size());
+                components.endComponent();
             }
         }
     }
 
-    return {std::move(sccVertices), std::move(sccOffsets)};
+    return std::move(components).build();
 }
 
 } // namespace ptarjan

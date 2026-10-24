@@ -1,4 +1,4 @@
-# Applied to the project's own sources: clang-format -i include/ptarjan/*.hpp src/*.cpp src/parallel/* bench/* examples/* tests/*
+# Applied to the project's own sources: clang-format -i include/ptarjan/*.hpp src/*.hpp src/*.cpp src/parallel/* bench/* examples/* tests/*
 BasedOnStyle: LLVM
 IndentWidth: 4
 ColumnLimit: 100

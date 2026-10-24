@@ -79,9 +79,9 @@ public:
     /// The same partition with each component sorted and the components ordered by
     /// their smallest vertex. Two results describe the same partition exactly when
     /// their normalized forms are equal.
-    Components normalized() const;
+    [[nodiscard]] Components normalized() const;
 
-    std::vector<std::vector<Vertex>> toVectors() const;
+    [[nodiscard]] std::vector<std::vector<Vertex>> toVectors() const;
 
     bool operator==(const Components& other) const = default;
 

@@ -103,11 +103,11 @@ public:
         : VertexOrderRoots(vertexCount, threadCount), expectedWorkers(threadCount),
           hasArrived(threadCount, false) {}
 
-    bool nextChunk(ptarjan::detail::Worker& worker, ptarjan::detail::RootRange& range) override {
+    bool nextBlock(ptarjan::detail::Worker& worker, ptarjan::detail::RootRange& range) override {
         {
             std::unique_lock<std::mutex> lock(startMutex);
-            if (!hasArrived[worker.getID()]) {
-                hasArrived[worker.getID()] = true;
+            if (!hasArrived[worker.id()]) {
+                hasArrived[worker.id()] = true;
                 ++arrivedWorkers;
                 if (arrivedWorkers == expectedWorkers) {
                     startCondition.notify_all();
@@ -116,7 +116,7 @@ public:
                 }
             }
         }
-        return VertexOrderRoots::nextChunk(worker, range);
+        return VertexOrderRoots::nextBlock(worker, range);
     }
 
 private:
@@ -186,9 +186,9 @@ void apiTests() {
                                      "an edge to a missing vertex must be rejected");
     requireThrows<std::out_of_range>([] { Graph({{1}}); },
                                      "an adjacency list naming a missing vertex must be rejected");
-    requireThrows<std::invalid_argument>([] { ptarjan::parallelScc(Graph(), 0); },
+    requireThrows<std::invalid_argument>([] { (void)ptarjan::parallelScc(Graph(), 0); },
                                          "zero workers must be rejected before starting threads");
-    requireThrows<std::invalid_argument>([] { ptarjan::hybridScc(Graph(), 0); },
+    requireThrows<std::invalid_argument>([] { (void)ptarjan::hybridScc(Graph(), 0); },
                                          "hybrid must reject zero workers");
     require(ptarjan::hybridScc(empty, 4).empty(), "empty graph has hybrid components");
     require(ptarjan::defaultThreadCount() >= 1, "the default thread count must be positive");

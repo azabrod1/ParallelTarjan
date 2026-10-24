@@ -1,11 +1,3 @@
-//
-//  suspension_manager.hpp
-//  Tarjan
-//
-//  Created by Alex Zabrodskiy on 5/19/17.
-//  Copyright © 2017 Alex Zabrodskiy. All rights reserved.
-//
-
 #ifndef PTARJAN_SUSPENSION_MANAGER_HPP
 #define PTARJAN_SUSPENSION_MANAGER_HPP
 
@@ -18,8 +10,6 @@
 namespace ptarjan::detail {
 
 class SuspensionManager {
-
-private:
     static constexpr bool SUSPEND = true;
     static constexpr bool RESUME = false;
 
@@ -27,9 +17,9 @@ private:
                          const std::vector<Cell*>& C);
 
 public:
-    bool suspend(Worker& worker, Search* const Sn, Cell* const conflictCell);
+    [[nodiscard]] bool suspend(Worker& worker, Search* const Sn, Cell* const conflictCell);
 
-    void bulkUnsuspend(const SearchList* const suspendedList, Cell* const prevBlockedOn,
+    void bulkUnsuspend(const SearchList* const blockedList, Cell* const completeCell,
                        std::vector<Search*>& toResume);
 };
 

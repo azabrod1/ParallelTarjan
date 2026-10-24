@@ -18,20 +18,19 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <exception>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "components_builder.hpp"
 #include "concurrentqueue.h"
 #include "parallel_tarjan.hpp"
 #include "ptarjan/scc.hpp"
+#include "threading.hpp"
 
 namespace ptarjan {
 
@@ -40,7 +39,7 @@ namespace {
 constexpr std::uint8_t ALIVE = 0;
 constexpr std::uint8_t REMOVED = 1;
 
-//Hands out consecutive index blocks of [0, size) from a shared counter
+// Hands out consecutive index blocks of [0, size) from a shared counter.
 class BlockCounter {
 public:
     void reset(std::size_t newSize) {
@@ -62,14 +61,14 @@ private:
     std::size_t size = 0;
 };
 
-//A barrier for the phases. std::barrier would do, but libc++ performs part of each arrival
-//inside its shared library, where ThreadSanitizer cannot see the ordering it provides
+// A barrier for the phases. std::barrier would do, but libc++ performs part of each arrival
+// inside its shared library, where ThreadSanitizer cannot see the ordering it provides.
 class PhaseBarrier {
 public:
     explicit PhaseBarrier(unsigned threads) : count(threads) {}
 
-    //Waits until every thread has arrived. The last to arrive runs onLast before any
-    //thread continues
+    // Waits until every thread has arrived. The last to arrive runs onLast before any
+    // thread continues.
     template <class OnLast>
     void arriveAndWait(OnLast onLast) {
         const std::uint32_t phase = generation.load(std::memory_order_acquire);
@@ -80,7 +79,7 @@ public:
             generation.notify_all();
             return;
         }
-        //Phases are short, so spin a little before blocking
+        // Phases are short, so spin a little before blocking.
         for (int spin = 0; spin < 100; ++spin) {
             if (generation.load(std::memory_order_acquire) != phase)
                 return;
@@ -107,9 +106,9 @@ public:
           inOffsets(n + std::size_t{1}), trimmed(workers), nextFrontiers(workers),
           giantParts(workers), pivotCandidates(workers), roots(n, workers), barrier(workers) {}
 
-    Components run() {
-        //Threads wait at a start gate until all of them exist, so that a thread that fails to
-        //start can never leave the others waiting at a barrier
+    [[nodiscard]] Components run() {
+        // Threads wait at a start gate until all of them exist, so that a thread that fails to
+        // start can never leave the others waiting at a barrier.
         std::atomic<int> gate{WAIT};
         std::vector<std::thread> threads;
         threads.reserve(threadCount);
@@ -122,131 +121,111 @@ public:
                 });
             gate.store(GO, std::memory_order_release);
         } catch (...) {
-            fail(std::current_exception());
+            failure.record(std::current_exception());
             gate.store(CANCEL, std::memory_order_release);
         }
         gate.notify_all();
         for (std::thread& thread : threads)
             thread.join();
-        if (failure)
-            std::rethrow_exception(failure);
+        failure.rethrowIfAny();
 
-        const Components rest = engine ? engine->run() : Components();
-
-        std::vector<Vertex> vertices;
-        vertices.reserve(n);
-        std::vector<std::size_t> offsets{0};
-        for (const auto& part : trimmed) {
-            for (const Vertex vertex : part) {
-                vertices.push_back(vertex);
-                offsets.push_back(vertices.size());
-            }
-        }
-        const std::size_t giantStart = vertices.size();
+        detail::ComponentsBuilder result;
+        result.reserve(n);
+        for (const auto& part : trimmed)
+            for (const Vertex vertex : part)
+                result.addSingleton(vertex);
         for (const auto& part : giantParts)
-            vertices.insert(vertices.end(), part.begin(), part.end());
-        if (vertices.size() != giantStart)
-            offsets.push_back(vertices.size());
-        for (const auto component : rest) {
-            vertices.insert(vertices.end(), component.begin(), component.end());
-            offsets.push_back(vertices.size());
-        }
-        return {std::move(vertices), std::move(offsets)};
+            result.add(part);
+        result.endComponent();
+        if (engine)
+            result.append(engine->run());
+        return std::move(result).build();
     }
 
 private:
     const Graph& graph;
     const Vertex n;
     const unsigned threadCount;
+    // In-degrees fit the 32-bit counters unless there are 2^32 edges or more.
+    const bool trimming = graph.edgeCount() < std::numeric_limits<std::uint32_t>::max();
 
     std::unique_ptr<std::atomic<std::uint8_t>[]> state;
     std::unique_ptr<std::atomic<std::uint8_t>[]> forward;
     std::unique_ptr<std::atomic<std::uint8_t>[]> backward;
-    //In- and out-degree counting only edges between remaining vertices
+    // In- and out-degree counting only edges between remaining vertices.
     std::unique_ptr<std::atomic<std::uint32_t>[]> inDegree;
     std::unique_ptr<std::atomic<std::uint32_t>[]> outDegree;
 
-    //The reverse graph: the predecessors of v are sources[inOffsets[v] .. inOffsets[v + 1])
+    // The reverse graph: the predecessors of v are sources[inOffsets[v] .. inOffsets[v + 1]).
     std::vector<std::size_t> inOffsets;
     std::vector<Vertex> sources;
 
-    //Building it without atomics: each thread sorts its edges into buckets of consecutive
-    //target vertices, and then each bucket is built by one thread
+    // Scratch for buildReverseGraph().
     std::size_t bucketWidth = 1;
     std::size_t bucketCount = 1;
-    std::vector<std::size_t> bucketCounts; //[thread * bucketCount + bucket], then positions
-    std::vector<std::size_t> bucketStarts; //Where each bucket's edges start, plus the total
-    std::vector<Vertex> scatteredTargets;  //Edges grouped by bucket; freed once the reverse
-    std::vector<Vertex> scatteredSources;  //graph is built, and the sources become `sources`
+    std::vector<std::size_t> bucketCounts; // [thread * bucketCount + bucket], then positions
+    std::vector<std::size_t> bucketStarts; // Where each bucket's edges start, plus the total
+    std::vector<Vertex> scatteredTargets;  // Edges grouped by bucket; freed once the reverse
+    std::vector<Vertex> scatteredSources;  // graph is built, and the sources become `sources`
 
     BlockCounter blocks;
     moodycamel::ConcurrentQueue<Vertex> trimQueue;
-    //Vertices waiting in trimQueue plus threads holding trim work of their own; see trim()
+    // Vertices waiting in trimQueue plus threads holding trim work of their own; see trim().
     std::atomic<std::int64_t> trimPending{0};
-    std::vector<std::vector<Vertex>> trimmed; //Per thread: vertices removed as single components
+    std::vector<std::vector<Vertex>> trimmed; // Per thread: vertices removed as single components
 
     std::vector<Vertex> frontier;
     std::vector<std::vector<Vertex>> nextFrontiers;
-    //Whether a search is finished, as decided in the phase that advances the frontier on one
-    //thread and in the last phase of a parallel level. Each flag is written only in its own
-    //phase and read only after that phase's barrier, and a full barrier separates every
-    //read from the next write. One flag for both would not do: the one-thread phase
-    //directly follows the last parallel phase, so thread 0 could overwrite the flag while
-    //slower threads were still reading it
+    // Whether a breadth-first search is finished, as decided in the phase that advances the frontier on one
+    // thread and in the last phase of a parallel level. Each flag is written only in its own
+    // phase and read only after that phase's barrier, and a full barrier separates every
+    // read from the next write. One flag for both would not do: the one-thread phase
+    // directly follows the last parallel phase, so thread 0 could overwrite the flag while
+    // slower threads were still reading it.
     bool smallFrontierDone = false;
     bool levelDone = false;
     std::vector<std::vector<Vertex>> giantParts;
-    //Per thread: its remaining vertex of largest in-degree x out-degree, if it has one
+    // Per thread: its remaining vertex of largest in-degree x out-degree, if it has one.
     std::vector<std::optional<std::pair<std::uint64_t, Vertex>>> pivotCandidates;
     Vertex pivot = 0;
     bool havePivot = false;
 
     detail::LockFreePendingQueue pending{threadCount};
     detail::VertexOrderRoots roots;
-    //Created only if the breadth-first phases leave vertices: its cells take 32 bytes a
-    //vertex, and when trimming or the forward-backward search finishes the graph, as on a
-    //DAG, the engine would only mark every cell complete and then scan them all for roots
+    // Created only if the breadth-first phases leave vertices: its cells take 32 bytes a
+    // vertex, and when trimming or the forward-backward search finishes the graph, as on a
+    // DAG, the engine would only mark every cell complete and then scan them all for roots.
     std::optional<detail::ParallelTarjan> engine;
 
     static constexpr int WAIT = 0, GO = 1, CANCEL = 2;
 
     PhaseBarrier barrier;
-    std::atomic<bool> aborted{false};
-    bool stopped = false; //aborted as it was when the last thread reached the latest barrier
-    std::mutex failureMutex;
-    std::exception_ptr failure;
+    detail::FirstFailure failure;
+    bool stopped =
+        false; // failure.aborted() as it was when the last thread reached the latest barrier
 
-    void fail(std::exception_ptr error) {
-        {
-            const std::scoped_lock lock(failureMutex);
-            if (!failure)
-                failure = std::move(error);
-        }
-        aborted = true;
-    }
-
-    //Runs one phase on every thread, then waits for all of them. Every thread passes every
-    //barrier, even after a failure, so no thread waits forever for one that gave up
+    // Runs one phase on every thread, then waits for all of them. Every thread passes every
+    // barrier, even after a failure, so no thread waits forever for one that gave up.
     template <class Work>
     void phase(Work work) {
         if (!stopped) {
             try {
                 work();
             } catch (...) {
-                fail(std::current_exception());
+                failure.record(std::current_exception());
             }
         }
-        //The last thread to arrive takes the snapshot, so every thread sees the same answer to
-        //"stop?" until the next barrier
-        barrier.arriveAndWait([this] { stopped = aborted.load(); });
+        // The last thread to arrive takes the snapshot, so every thread sees the same answer to
+        // "stop?" until the next barrier.
+        barrier.arriveAndWait([this] { stopped = failure.aborted(); });
     }
 
-    //Thread `id` of `threadCount` owns the vertices [first, last) for whole-array passes
+    // Thread `id` of `threadCount` owns the vertices [first, last) for whole-array passes.
     std::pair<std::size_t, std::size_t> range(unsigned id) const {
         return {std::size_t{n} * id / threadCount, std::size_t{n} * (id + 1) / threadCount};
     }
 
-    //Thread `id`'s share of the source vertices, balanced by edge count: [first, last)
+    // Thread `id`'s share of the source vertices, balanced by edge count: [first, last).
     std::pair<std::size_t, std::size_t> edgeRange(unsigned id,
                                                   std::span<const std::size_t> offsets) const {
         auto start = [&](unsigned thread) -> std::size_t {
@@ -259,32 +238,41 @@ private:
         return {start(id), start(id + 1)};
     }
 
-    bool tryRemove(Vertex vertex) {
+    [[nodiscard]] bool tryRemove(Vertex vertex) {
         std::uint8_t expected = ALIVE;
         return state[vertex].compare_exchange_strong(expected, REMOVED, std::memory_order_relaxed);
     }
 
     void phases(unsigned id) {
+        buildReverseGraph(id);
+        if (trimming)
+            trimSingletons(id);
+        forwardBackward(id);
+        handOff(id);
+    }
+
+    // The reverse graph, built without atomics: each thread sorts its edges into buckets of
+    // consecutive target vertices, and then each bucket is built by one thread. Atomic
+    // counters per target vertex were the slowest part of the whole algorithm: every edge
+    // bounced a cache line between cores.
+    void buildReverseGraph(unsigned id) {
         const auto offsets = graph.offsets();
         const auto targets = graph.targets();
-        const auto [first, last] = range(id);
-        //In-degrees fit the 32-bit counters unless there are 2^32 edges or more
-        const bool trimming = graph.edgeCount() < std::numeric_limits<std::uint32_t>::max();
-
-        // Reverse graph. Atomic counters per target vertex were the slowest part of the whole
-        // algorithm: every edge bounced a cache line between cores.
         const auto [edgeFirst, edgeLast] = edgeRange(id, offsets);
         phase([&] {
-            if (id == 0) {
-                bucketCount = std::clamp<std::size_t>(n / 2048, 1, 4096);
-                bucketWidth =
-                    std::max<std::size_t>((std::size_t{n} + bucketCount - 1) / bucketCount, 1);
-                bucketCount = (std::size_t{n} + bucketWidth - 1) / bucketWidth;
-                bucketCounts.assign(std::size_t{threadCount} * bucketCount, 0);
-                bucketStarts.assign(bucketCount + 1, 0);
-                scatteredTargets.resize(graph.edgeCount());
-                scatteredSources.resize(graph.edgeCount());
-            }
+            if (id != 0)
+                return;
+            // About 2048 vertices a bucket, so that the per-bucket counters in the last
+            // step stay in cache, and at most 4096 buckets, so that the table of each
+            // thread's counts stays small. Rounding the width up can leave fewer buckets.
+            bucketCount = std::clamp<std::size_t>(n / 2048, 1, 4096);
+            bucketWidth =
+                std::max<std::size_t>((std::size_t{n} + bucketCount - 1) / bucketCount, 1);
+            bucketCount = (std::size_t{n} + bucketWidth - 1) / bucketWidth;
+            bucketCounts.assign(std::size_t{threadCount} * bucketCount, 0);
+            bucketStarts.assign(bucketCount + 1, 0);
+            scatteredTargets.resize(graph.edgeCount());
+            scatteredSources.resize(graph.edgeCount());
         });
         phase([&] {
             std::size_t* const counts = bucketCounts.data() + std::size_t{id} * bucketCount;
@@ -294,7 +282,7 @@ private:
         phase([&] {
             if (id != 0)
                 return;
-            //Bucket by bucket, thread by thread: where each thread's edges of a bucket go
+            // Bucket by bucket, thread by thread: where each thread's edges of a bucket go.
             std::size_t position = 0;
             for (std::size_t bucket = 0; bucket < bucketCount; ++bucket) {
                 bucketStarts[bucket] = position;
@@ -319,9 +307,9 @@ private:
                 }
         });
         phase([&] {
-            //Each bucket's edges already sit where its vertices' reverse edges belong, so
-            //sorting them by target within the bucket turns scatteredSources into the reverse
-            //graph's sources without a second edge-sized array
+            // Each bucket's edges already sit where its vertices' reverse edges belong, so
+            // sorting them by target within the bucket turns scatteredSources into the reverse
+            // graph's sources without a second edge-sized array.
             std::vector<std::uint32_t> local;
             std::vector<Vertex> sorted;
             std::size_t begin, end;
@@ -357,28 +345,33 @@ private:
             sources = std::move(scatteredSources);
             std::vector<Vertex>().swap(scatteredTargets);
         });
+    }
 
-        // Trim, seeded by every vertex that already has no in- or out-edges.
-        if (trimming) {
-            phase([&] {
-                std::vector<Vertex> seeds;
-                for (std::size_t v = first; v < last; ++v) {
-                    const auto in = static_cast<std::uint32_t>(inOffsets[v + 1] - inOffsets[v]);
-                    const auto out = static_cast<std::uint32_t>(offsets[v + 1] - offsets[v]);
-                    inDegree[v].store(in, std::memory_order_relaxed);
-                    outDegree[v].store(out, std::memory_order_relaxed);
-                    if ((in == 0 || out == 0) && tryRemove(static_cast<Vertex>(v)))
-                        seeds.push_back(static_cast<Vertex>(v));
-                }
-                //Counted before they become visible, so trimPending never reads 0 too early
-                trimPending.fetch_add(static_cast<std::int64_t>(seeds.size()));
-                if (!trimQueue.enqueue_bulk(seeds.begin(), seeds.size()))
-                    throw std::bad_alloc();
-            });
-            phase([&] { trim(id); });
-        }
+    // Step 1: trimming, seeded by every vertex that already has no in- or out-edges.
+    void trimSingletons(unsigned id) {
+        const auto offsets = graph.offsets();
+        const auto [first, last] = range(id);
+        phase([&] {
+            std::vector<Vertex> seeds;
+            for (std::size_t v = first; v < last; ++v) {
+                const auto in = static_cast<std::uint32_t>(inOffsets[v + 1] - inOffsets[v]);
+                const auto out = static_cast<std::uint32_t>(offsets[v + 1] - offsets[v]);
+                inDegree[v].store(in, std::memory_order_relaxed);
+                outDegree[v].store(out, std::memory_order_relaxed);
+                if ((in == 0 || out == 0) && tryRemove(static_cast<Vertex>(v)))
+                    seeds.push_back(static_cast<Vertex>(v));
+            }
+            // Counted before they become visible, so trimPending never reads 0 too early.
+            trimPending.fetch_add(static_cast<std::int64_t>(seeds.size()));
+            if (!trimQueue.enqueue_bulk(seeds.begin(), seeds.size()))
+                throw std::bad_alloc();
+        });
+        phase([&] { trim(id); });
+    }
 
-        // Forward-backward from the remaining vertex of largest in-degree x out-degree.
+    // Step 2: the component of the remaining vertex of largest in-degree x out-degree.
+    void forwardBackward(unsigned id) {
+        const auto [first, last] = range(id);
         phase([&] {
             std::optional<std::pair<std::uint64_t, Vertex>> best;
             for (std::size_t v = first; v < last; ++v) {
@@ -408,32 +401,36 @@ private:
                 frontier.assign(1, pivot);
             }
         });
-        if (havePivot) {
-            search(id, offsets, targets, [&](Vertex w) {
-                return state[w].load(std::memory_order_relaxed) == ALIVE &&
-                       forward[w].load(std::memory_order_relaxed) == 0 &&
-                       forward[w].exchange(1, std::memory_order_relaxed) == 0;
-            });
-            phase([&] {
-                if (id == 0)
-                    frontier.assign(1, pivot);
-            });
-            search(id, inOffsets, sources, [&](Vertex w) {
-                return forward[w].load(std::memory_order_relaxed) == 1 &&
-                       backward[w].load(std::memory_order_relaxed) == 0 &&
-                       backward[w].exchange(1, std::memory_order_relaxed) == 0;
-            });
-            phase([&] {
-                for (std::size_t v = first; v < last; ++v) {
-                    if (backward[v].load(std::memory_order_relaxed) == 1) {
-                        state[v].store(REMOVED, std::memory_order_relaxed);
-                        giantParts[id].push_back(static_cast<Vertex>(v));
-                    }
+        if (!havePivot)
+            return;
+        breadthFirst(id, graph.offsets(), graph.targets(), [&](Vertex w) {
+            return state[w].load(std::memory_order_relaxed) == ALIVE &&
+                   forward[w].load(std::memory_order_relaxed) == 0 &&
+                   forward[w].exchange(1, std::memory_order_relaxed) == 0;
+        });
+        phase([&] {
+            if (id == 0)
+                frontier.assign(1, pivot);
+        });
+        breadthFirst(id, inOffsets, sources, [&](Vertex w) {
+            return forward[w].load(std::memory_order_relaxed) == 1 &&
+                   backward[w].load(std::memory_order_relaxed) == 0 &&
+                   backward[w].exchange(1, std::memory_order_relaxed) == 0;
+        });
+        phase([&] {
+            for (std::size_t v = first; v < last; ++v) {
+                if (backward[v].load(std::memory_order_relaxed) == 1) {
+                    state[v].store(REMOVED, std::memory_order_relaxed);
+                    giantParts[id].push_back(static_cast<Vertex>(v));
                 }
-            });
-        }
+            }
+        });
+    }
 
-        // Hand the rest to the Tarjan engine: removed vertices count as complete.
+    // Step 3: hands the remaining vertices to the Tarjan engine, with every removed vertex
+    // marked complete.
+    void handOff(unsigned id) {
+        const auto [first, last] = range(id);
         phase([&] {
             if (id != 0)
                 return;
@@ -452,34 +449,34 @@ private:
         });
     }
 
-    //Removes vertices until no thread has one left. Each thread works through a stack of its
-    //own and shares only when that stack grows, because removals cascade along narrow fronts
-    //where threads sharing every vertex would mostly wait for one another. trimPending
-    //counts the vertices in the shared queue and the threads holding vertices: a thread
-    //counts itself before uncounting what it takes from the queue, and counts what it
-    //shares before the queue shows it, so trimPending is 0 only when nothing is left
+    // Removes vertices until no thread has one left. Each thread works through a stack of its
+    // own and shares only when that stack grows, because removals cascade along narrow fronts
+    // where threads sharing every vertex would mostly wait for one another. trimPending
+    // counts the vertices in the shared queue and the threads holding vertices: a thread
+    // counts itself before uncounting what it takes from the queue, and counts what it
+    // shares before the queue shows it, so trimPending is 0 only when nothing is left.
     void trim(unsigned id) {
-        constexpr std::size_t TAKE = 64;   //Vertices taken from the shared queue at once
-        constexpr std::size_t SHARE = 512; //A stack this deep gives half its vertices away
+        constexpr std::size_t TAKE = 64;   // Vertices taken from the shared queue at once
+        constexpr std::size_t SHARE = 512; // A stack this deep gives half its vertices away
         const auto offsets = graph.offsets();
         const auto targets = graph.targets();
         moodycamel::ConsumerToken consumer(trimQueue);
         moodycamel::ProducerToken producer(trimQueue);
-        if (!producer.valid()) //Allocation failure leaves the token invalid, not thrown
+        if (!producer.valid()) // Allocation failure leaves the token invalid, not thrown
             throw std::bad_alloc();
         std::vector<Vertex> stack(TAKE);
         auto& removed = trimmed[id];
 
         int idlePolls = 0;
-        while (!aborted.load(std::memory_order_relaxed)) {
+        while (!failure.aborted(std::memory_order_relaxed)) {
             stack.resize(TAKE);
             const std::size_t taken = trimQueue.try_dequeue_bulk(consumer, stack.begin(), TAKE);
             stack.resize(taken);
             if (taken == 0) {
                 if (trimPending.load() == 0)
                     return;
-                //A long cascade can keep one thread busy while the others have nothing:
-                //back off, so that with more threads than cores they do not take its time
+                // A long cascade can keep one thread busy while the others have nothing:
+                // back off, so that with more threads than cores they do not take its time.
                 if (++idlePolls < 64)
                     std::this_thread::yield();
                 else
@@ -487,7 +484,7 @@ private:
                 continue;
             }
             idlePolls = 0;
-            trimPending.fetch_add(1); //This thread now holds vertices
+            trimPending.fetch_add(1); // This thread now holds vertices
             trimPending.fetch_sub(static_cast<std::int64_t>(taken));
 
             while (!stack.empty()) {
@@ -512,17 +509,18 @@ private:
                     stack.resize(stack.size() - share);
                 }
             }
-            trimPending.fetch_sub(1); //Holds nothing now
+            trimPending.fetch_sub(1); // Holds nothing now
         }
     }
 
-    //Level-synchronous breadth-first search from frontier along the given CSR arrays;
-    //visit(w) claims w and returns true at most once per vertex
+    // Level-synchronous breadth-first search from frontier along the given CSR arrays;
+    // visit(w) claims w and returns true at most once per vertex.
     template <class Offsets, class Targets, class Visit>
-    void search(unsigned id, const Offsets& edgeOffsets, const Targets& edgeTargets, Visit visit) {
-        //Below this many vertices one thread advances the frontier faster than all of them
-        //can meet at a barrier for every level. On a long path or cycle every level is
-        //small, and level-synchronous search alone would take one barrier round per vertex
+    void breadthFirst(unsigned id, const Offsets& edgeOffsets, const Targets& edgeTargets,
+                      Visit visit) {
+        // Below this many vertices one thread advances the frontier faster than all of them
+        // can meet at a barrier for every level. On a long path or cycle every level is
+        // small, and level-synchronous search alone would take one barrier round per vertex.
         constexpr std::size_t SMALL_FRONTIER = 4096;
         while (true) {
             phase([&] {
@@ -565,9 +563,9 @@ private:
                     frontier.insert(frontier.end(), next.begin(), next.end());
                 levelDone = frontier.empty();
             });
-            //Every thread reads the same decision after the barrier, so all leave together and
-            //keep passing the same barriers. (Not frontier itself: once thread 0 has left, the
-            //next phase refills it while other threads may still be deciding.)
+            // Every thread reads the same decision after the barrier, so all leave together and
+            // keep passing the same barriers. (Not frontier itself: once thread 0 has left, the
+            // next phase refills it while other threads may still be deciding.)
             if (levelDone || stopped)
                 return;
         }
@@ -577,9 +575,7 @@ private:
 } // namespace
 
 Components hybridScc(const Graph& graph, unsigned threadCount) {
-    if (threadCount == 0)
-        throw std::invalid_argument("hybridScc needs at least one worker thread");
-    Hybrid algorithm(graph, threadCount);
+    Hybrid algorithm(graph, detail::checkedThreadCount(threadCount, "hybridScc"));
     return algorithm.run();
 }
 

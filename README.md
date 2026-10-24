@@ -300,7 +300,7 @@ The sources are formatted with clang-format 23 (`.clang-format`) and checked
 with clang-tidy (`.clang-tidy`):
 
 ```sh
-clang-format -i include/ptarjan/*.hpp src/*.cpp src/parallel/* bench/* examples/*.cpp tests/*.cpp
+clang-format -i include/ptarjan/*.hpp src/*.hpp src/*.cpp src/parallel/* bench/* examples/*.cpp tests/*.cpp
 clang-tidy -p build src/*.cpp src/parallel/*.cpp bench/*.cpp examples/*.cpp
 ```
 

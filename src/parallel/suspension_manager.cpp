@@ -1,11 +1,3 @@
-//
-//  suspension_manager.cpp
-//  Tarjan
-//
-//  Created by Alex Zabrodskiy on 5/3/17.
-//  Copyright © 2017 Alex Zabrodskiy. All rights reserved.
-//
-
 #include "suspension_manager.hpp"
 
 #include <cstddef>
@@ -14,155 +6,90 @@
 namespace ptarjan::detail {
 
 /*
- Inputs:  @worker:   Object encapsulating thread specific memory
-          @Sn:       The search that is now blocked on the cell conflictCell
-          @conflictCell cell that Sn is blocked on
- 
- Pre:     The search Sn has reached a cell that is not complete and hence wants to suspend
-          Sn.cellBlockedOn == nullptr is a precondition
- 
- Purpose: This function is called in the event that a search encounters a cell on another search's stack
-          so that the search can suspend until that cell is assigned to a strongly connected component (SCC).
-          When two or more searches acquire cells in the same SCC, they will eventually run into each other and
-          block on one another's searches forming a cycle. The cycle cannot be resolved on its own
-          since no one search owns all the cells in the SCC. Before exiting, suspend()
-          checks to see if the suspension of Sn formed a cycle that must be resolved by our
-          cellTransfer() protocol. Cycle detection is done as follows:
- 
-          Cycle Detection:
+ Pre:     Sn reached conflictCell, which another search holds, and Sn is not blocked
+          on any cell.
 
-          First, we check if the search owning conflictCell, S0, is itself suspended. If no, clearly
-          there is no cycle. If S0 is suspended on a cell owned by a search S1, we repeat the process for S1.
-          That is, if S1 is not suspended, we conclude there is no cycle. Otherwise we apply the process
-          to S2, the search owning the cell S1 is suspended on. This process is repeated until either a) We reach
-          an Si that isn't suspended or b) we reach an Si such that Si = Sn.
- 
-          In the first case, we can be sure there is no cycle. In the case of b) the path we took
-          from S0 to Sn is a candidate for a cycle. The path is stored in the vector S. While constructing the
-          path, we also keep a vector of cells, C, such that C[i] is the cell owned by S[i] that S[i-1] is  blocked on.
-          Lastly, vector L records the age of each Si
- 
-          The contents of the vector S and C can be visually represented as
- 
-          S0 ----> S1  ---->S2 --->...--->  Sn-1 -----> Sn ----> (to S0 to complete loop)
+ Purpose: Suspends Sn until conflictCell is assigned to a component, and resolves the
+          blocking cycle that the suspension may close. When several searches take cells
+          of one component, each ends up waiting for a cell another holds; none can
+          finish the component, so they would wait forever.
+
+          Cycle detection. Starting from conflictCell's owner S0, follow each search to
+          the owner of the cell it is blocked on: S0 -> S1 -> ... The walk stops with no
+          cycle at a search that is not blocked, and finds a candidate cycle when it
+          returns to Sn. S records the searches, C the cells (C[i] is the cell of S[i]
+          that the search before it waits on) and L each search's age:
+
+          S0 ----> S1 ----> S2 ---> ... ---> Sn-1 ----> Sn ----> (back to S0)
            ^        ^        ^                ^          ^
            |        |        |                |          |
-           |        |        |                |          |
-           |        |        |                |          |
            C0       C1       C2               Cn-1       Cn
- 
-           We travel the path a second time to verify that a cycle indeed exists. If anything
-           about the path is different (i.e. different search or conflict cells, different age of the searches,
-           a cell became complete or changed owner, etc) we can confirm that suspending Sn did not immediately cause
-           a cycle and we can safely suspend. If the path is unchanged, there is indeed a cycle that must
-           be resolved. If two or more searches suspend at approximately the same time to complete a cycle,
-           the cycle could be detected by more than one thread. To prevent multiple threads from trying to
-           resolve the same  cycle, upon detecting a cycle a thread will make the age variable of the 
-           search with the lowest pointer odd to indicate that this cycle is already being resolved.
-           Race conditions are avoided by using a Compare_and_Exchange operation to increment age
- 
-           It is impossible for a search to suspend on the same cell twice. Therefore, if the second pass
-           finds that each search is still suspended on the same cell it were suspended on
-           during the first pass, it must have been that they were suspended the entire time. Thus,  in between
-           the first and second passes, all the searches Si must have been suspended on Ci+1 (mod n), confirming the cycle
- 
- 
- 
- 
- 
-           a-->b-->c-->a
- 
- 
- Post:    (No Cycle) Sn is suspended on conflictCell
-          
-          (With Cycle) The cycle was resolved by transferring all the cells known to be in
-          the same SCC as the conflict cells to Sn's  stacks. Sn is free to resume execution as it now owns the
-          cell it was blocked on. Any Si in the resolved cycle whose tarjanStacks are empty
-          following the transfers have their memory recycled by the thread for reuse in representing
-          future searches
 
+          A second walk confirms the cycle. If any search, cell or age differs, or a cell
+          has become complete or changed owner, Sn's suspension did not close a cycle and
+          Sn simply stays suspended. A search never suspends twice on the same cell, so a
+          path that is unchanged on the second walk was blocked throughout: the cycle is
+          real. Several threads may confirm the same cycle at once; the one that makes
+          the age of the cycle's search at the lowest address odd, with a CAS, resolves
+          it. An odd age tells other walks that a resolution is under way.
 
- Returns:  true(SUSPEND) if Sn was suspended, false(RESUME) can continue immediately after the function returns
+ Post:    With no cycle, Sn is suspended on conflictCell. With a cycle, the cells of the
+          conflicting component have been transferred to Sn, which now owns the cell it
+          was blocked on and continues. Searches of the cycle left with no cells are
+          reclaimed for reuse.
 
- Note: the dissertation version also recorded the age of each cell Ci, because cells were recycled to
- represent other vertices. Every vertex now has its own cell for the whole run, so a cell cannot change
- identity between the two passes.
+ Returns: SUSPEND if Sn is suspended, RESUME if it can continue at once.
 
+ Note: the dissertation version also recorded the age of each cell Ci, because cells were
+ recycled to represent other vertices. Every vertex now has its own cell for the whole
+ run, so a cell cannot change identity between the two walks.
 */
-
 bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const conflictCell) {
-
-    const std::uint32_t Sn_Age(Sn->age);
+    const std::uint32_t SnAge = Sn->age;
 
     worker.blockedListOf(conflictCell)->push_back(Sn);
-
-    //Conflict cell seems to be in progress, so mark this search as suspended
     Sn->suspendOn(conflictCell);
 
-    /*We must check that the cell did not become complete while we suspended the 
-     search on it as its unsuspend() function may have been called before 
-     the search was "officially" suspended, hence leaving it forever suspended.
-     If the cell did become complete, we try to manually unsuspended it.
-     If the unsuspend succeeds, we can resume. Otherwise, we must suspend as
-     the search may have already been put on pending and we do not want do threads to run it 
-     at the same time
-     */
-
-    //In case resumeAll() already happened, we do its work for it and remove cell blocked on
-
+    // The cell may have become complete before Sn was on its blocked list, in which case
+    // the completing thread may not have resumed Sn. Take Sn back if it is still blocked;
+    // if the CAS fails, the completing thread has queued Sn and another worker may already
+    // be running it, so this one must not.
     if (conflictCell->isComplete())
-        return Sn->removeCellBlockedOnWithCompareExchange(conflictCell) ? RESUME : SUSPEND;
+        return Sn->tryClearBlockedOn(conflictCell) ? RESUME : SUSPEND;
 
-    //We are reusing old empty vectors to represent the path of searches and cells
-    //We reuse the memory to avoid allocating memory too much as memory is often
-    //allocated sequentially on standard systems, hence presenting a potential bottleneck
+    // Reused buffers, so that suspending does not allocate.
+    worker.cleanPaths();
+    std::vector<Search*>& S = worker.S;
+    std::vector<Cell*>& C = worker.C;
+    std::vector<std::uint32_t>& L = worker.L;
 
-    worker.cleanPaths();                //Refresh memory from previous usage
-    std::vector<Search*>& S = worker.S; //vector to record the path from S0 to Sn
-    std::vector<Cell*>& C = worker.C;   //Ci is the cell of Si that the previous search blocks on
-    std::vector<std::uint32_t>& L = worker.L; //Li = age of the search object Si
+    // First walk.
+    Search* Si = Sn;
+    Cell* Ci = nullptr;
+    std::uint32_t Li = 0;
 
-    /******* Check for cycle ********/
-
-    //Path: first pass
-
-    Search* Si(Sn);
-    Cell* Ci;
-    std::uint32_t Li;
-
-    //The path can lead into a blocking cycle that does not contain Sn. That cycle is
-    //resolved by its own last suspender, but until then the walk below would go round
-    //it indefinitely, growing S, C and L. Brent's cycle detection spots a repeated
-    //search: remember the search at each power-of-two step and stop if we meet it again
-    Search* checkpoint(nullptr);
-    std::size_t nextCheckpoint(1);
-
-    //is there already a blocking path from S1 to Sn?
-
-    /*S0 --> S1 -->  S2 --> S3 -->...---> Sn--> (loop) S0
-     ^       ^      ^       ^            ^
-     |       |      |       |            |
-     C0      C1    C2       C3           Cn
-     
-     */
+    // The path can lead into a blocking cycle that does not contain Sn. That cycle is
+    // resolved by its own last suspender, but until then the walk below would go round
+    // it indefinitely, growing S, C and L. Brent's cycle detection spots a repeated
+    // search: remember the search at each power-of-two step and stop if we meet it again.
+    Search* checkpoint = nullptr;
+    std::size_t nextCheckpoint = 1;
 
     do {
-        Ci = Si->getBlockingCell();
+        Ci = Si->blockedOn();
         if (!Ci)
             return SUSPEND;
 
-        Si = Ci->getOwner();
+        Si = Ci->owner();
         if (!Si)
             return SUSPEND;
 
+        // An odd age means a thread is resolving a cycle through Si.
         Li = Si->age;
-
-        //Odd numbers signal that the search is currently in a transfer, so we can safely
-        //suspend knowing any cycles are being resolved
         if (Li & 1U)
             return SUSPEND;
 
-        //Back at a search we already passed without meeting Sn: Sn is not on a cycle
+        // Back at a search we already passed without meeting Sn: Sn is not on a cycle.
         if (Si == checkpoint)
             return SUSPEND;
 
@@ -174,30 +101,24 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const co
             checkpoint = Si;
             nextCheckpoint *= 2;
         }
-
     } while (Si != Sn);
 
-    //Second pass
-
+    // Second walk.
     Si = Sn;
-
-    std::size_t minPtr(0); //Records the index of search stored at the lowest memory address
-    const std::size_t pathSize(S.size());
+    std::size_t minPtr = 0; // The index of the search at the lowest address
+    const std::size_t pathSize = S.size();
 
     for (std::size_t i = 0; i < pathSize; ++i) {
+        Ci = Si->blockedOn();
 
-        Ci = Si->getBlockingCell();
-
-        //Make sure the search's age has not changed in between the read of cellBlockedOn in the first pass
-        //and the one above
+        // The age must not have changed since the first walk read Si's blocking cell.
         if (Si->age != L[(i + pathSize - 1) % pathSize])
             return SUSPEND;
 
         if (Ci != C[i])
             return SUSPEND;
 
-        Si = Ci->getOwner(); //Checks completeness as well, returning null if Ci is complete
-
+        Si = Ci->owner(); // nullptr if Ci is complete
         if (Si != S[i])
             return SUSPEND;
 
@@ -206,148 +127,82 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const co
         if (std::less<Search*>{}(Si, S[minPtr]))
             minPtr = i;
     }
-    //If Sn became suspended on a different cell or Sn was finished and recycled,
-    // a later thread calling suspend() can handle any cycles it is involved in
-    if (Sn->getBlockingCell() != conflictCell || Sn_Age != L[pathSize - 1])
+
+    // If Sn suspended on a different cell, or finished and was reused, a later call
+    // to suspend() handles any cycle it is on.
+    if (Sn->blockedOn() != conflictCell || SnAge != L[pathSize - 1])
         return SUSPEND;
 
-    /* If we get here, a loop is confirmed but we need a "consensus protocol"
-     * so that more than one thread does not attempt to fix the same cycle.
-     * We increment the age of the search with the smallest pointer by one
-     * Making it odd. This is why we check if the ages of searches are odd when building path
-     */
-
+    // The cycle is confirmed. Only the thread whose CAS makes S[minPtr]'s age odd resolves it.
     if (!S[minPtr]->age.compare_exchange_strong(L[minPtr], L[minPtr] + 1))
         return SUSPEND;
 
-    /* Sn can resume after cell transfer protocal transfers the conflicting cell to Sn
-     * Sn's cellBlockedOn field is made null before the transfer to prevent any false cycle detections during the
-     * intermediate steps
-     */
+    // Sn stops waiting before the transfer so that no walk during it sees a false cycle.
+    Sn->clearBlockedOn();
 
-    Sn->removeCellBlockedOn();
+    runCellTransfer(worker, S, C);
 
-    runCellTransfer(worker, S, C); //Resolve the cycle
-
-    //Make age of search even again to signal that the search is no longer in transfer
-    ++S[minPtr]->age;
+    ++S[minPtr]->age; // Even again: the resolution is over
 
     for (Search* search : S)
-        if (search->done()) //Reclaim memory from the finished search
+        if (search->done())
             worker.reclaim(search);
 
     return RESUME;
 }
 
-/**
- 
- 
- Inputs:
- 
- @param S: The blocking path from the search directly blocking S, Sn, all the way to Sn
- 
-           The path vector S is represented as this:
- 
-           S0 ----> S1  ---->S2 --->...--->  Sn-1 -----> Sn ----> (to S0 to complete loop)
- 
- @param C:
-           The vector C is the list of Cells Ci, 0 <= i <= n where Ci belongs to Si and the search Si-1
-           is blocked on Ci. i.e. Sn blocks on C0 which is owned by S0. S0 is suspended on C1 which is
-           owned by S1 and so on. 
- 
- Pre:      The searches S0 is blocked on a cell C1 of search S1, the search S1 is blocked on a cell C2 of S2,...,
-           the search Sn is blocked on a cell Sn
- 
- Purpose:  Blocking Cycles are formed when two or more searches explore the same SCC. 
-           We refer to this SCC as the conflict SCC.   The problem is that
-           cells only become "complete" when a search has found every cell in that SCC. So when multiple searches
-           explore the same SCC, each one collects some cells of the SCC until they are forced to suspend on one
-           another as they try to collect the entire SCC. The searches cannot resume since they are blocked on one another
-           (more specifically searches block on cells and do not resume until the cells are complete but the cells 
-            can't become complete since no search owns the whole SCC.
- 
-           Since the problem is that the searches S0 to Sn all own cells from the same SCC, the conflict SCC,
-           the solution is to transfer all those cells to one of the searches. The role of this function is to do
-           just that. The function transfers the cells known to be in the conflict set from searches S0...Sn-1  to
-           the search Sn.
- 
- Post:     The cells of S0 to Sn-1 known to be in the conflict set are transferred to Sn
-           The exact reasoning is provided in the paper associated with this program
- 
-           S0 to Sn-1 are now all blocked on the last cell that was transferred from their tarjanStacks,
-           which are now owned by Sn
- 
-           The controlStack top of Sn has its rank lowered to account for all the new cells transferred
- 
+/*
+ Inputs:  S is the confirmed cycle S0 -> S1 -> ... -> Sn from suspend(), and C[i] is
+          the cell of S[i] that the search before it is blocked on (Sn waits on C0).
 
- 
- **/
+ Purpose: The searches of a blocking cycle all hold cells of one component, the
+          conflict component, and a cell becomes complete only when a single search
+          holds its whole component. Moving the conflict component's cells to Sn ends
+          the cycle; Search::transferCells explains which cells that takes.
 
+ Post:    The cells of S0 .. Sn-1 known to be in the conflict component belong to Sn.
+          Each of S0 .. Sn-1 is blocked on the last cell it gave up. The top of Sn's
+          control stack has its rank lowered to cover the transferred cells.
+*/
 void SuspensionManager::runCellTransfer(Worker& worker, const std::vector<Search*>& S,
                                         const std::vector<Cell*>& C) {
-    Search* const Sn(S.back());
+    Search* const Sn = S.back();
 
-    //Traverse the path starting with the search that S is directly blocked on
     for (std::size_t i = 0; i + 1 < S.size(); ++i)
         Search::transferCells(worker, S[i], Sn, C[i]);
 
-    //Makes sure S is "aware" that all transferred cells are in the same SCC,
-    //make the new top of S's tarjan stack (last of the transferred cells) have rank
-    //of the cell of S that S(n-1) was blocked on
-
+    // The transferred cells and Cn are in one component: the new top of Sn's stack takes
+    // the index of the cell of Sn that Sn-1 was blocked on as its rank.
     Sn->controlStackTop()->promote(C.back()->index);
 }
 
-/**
+/*
+ Collects the searches to resume now that completeCell is complete. The blocked list can
+ also hold searches that stopped waiting on the cell for another reason, during a cycle
+ resolution, and so are no longer suspended on it; the list has no delete operation.
+ Each search is taken only if a CAS clears completeCell as its blocking cell, so a
+ search that has moved on is never resumed by mistake.
 
- Summary: This function puts all the searches blocked on a cell that has become complete
-          on the Pending object for resumption
-
- @param completeCell  The cell that has recently become complete
- @param blockedList The list of searches that may be blocked on completeCell
- @param toResume      A vector that will hold the searches that must be put on the Pending object for resumption
-                 The Pending Queue is accessed by worker threads that
-                 have finished their previous jobs and are looking for new searches to work on
-
- Purpose: The code looks a bit complicated because it is optimized for common conditions the algorithm faces 
-          Basically, after a cell is completed all the searches blocked on that cell must be resumed. Some of
-          the searches in the BlockedList; however, will no longer actually be suspended on the cell by the time this
-          function is called. The reason for this is that searches will sometimes unblock on a cell for
-          reasons other than it being complete (i.e. during a transfer) but it is more efficent to leave them in the
-          blockedList anyway as it allows a simpler of blockedList. To insure no searches that are not actually suspended
-          on blockedList are accidently resumed, we use a compare_and_exchange to verify that the search was actually
-          suspended on the cell
- 
- */
+ Most cells have only a few searches blocked on them, so the list's first buffer is read
+ directly; longer lists need the iterator.
+*/
 void SuspensionManager::bulkUnsuspend(const SearchList* const blockedList, Cell* const completeCell,
                                       std::vector<Search*>& toResume) {
-
-    Search* search;
-    const std::size_t size(blockedList->size());
-
-    //Cells will very rarely have more than a few searches suspended on them, so we optimize
-    //our algorithm to quickly deal with suspended. This allows us to save memory and time at the cost of
-    //slightly longer stores and retrievals when the suspended list is longer than 8.
-    //Because most graphs are large, it will be very rare when more than a few searches suspend on the same cell
-    //so the trade off is well worth it
+    Search* search = nullptr;
+    const std::size_t size = blockedList->size();
 
     if (blockedList->isSmallList(size)) {
-        const std::atomic<Search*>* const suspendedSearches{blockedList->getSmallBuffer()};
+        const std::atomic<Search*>* const suspendedSearches = blockedList->getSmallBuffer();
         for (std::size_t e = 0; e < size; ++e) {
             search = suspendedSearches[e].load();
-            if (search && search->removeCellBlockedOnWithCompareExchange(completeCell))
+            if (search && search->tryClearBlockedOn(completeCell))
                 toResume.push_back(search);
         }
-    }
-
-    else {
-
-        auto suspendedListIt(blockedList->getIt(size));
-
+    } else {
+        auto suspendedListIt = blockedList->getIt(size);
         while (suspendedListIt.increment()) {
             search = suspendedListIt.getNext();
-
-            if (search && search->removeCellBlockedOnWithCompareExchange(completeCell))
+            if (search && search->tryClearBlockedOn(completeCell))
                 toResume.push_back(search);
         }
     }

@@ -8,7 +8,7 @@ namespace ptarjan {
 
 /// Tarjan's algorithm on one thread, iteratively, so deep graphs cannot overflow
 /// the call stack.
-Components sequentialScc(const Graph& graph);
+[[nodiscard]] Components sequentialScc(const Graph& graph);
 
 /// The number of worker threads parallelScc uses by default: the hardware
 /// concurrency, or 1 if that is unknown.
@@ -24,7 +24,8 @@ unsigned defaultThreadCount() noexcept;
  * Throws std::invalid_argument if threadCount is 0. The graph must not change
  * while the call runs.
  */
-Components parallelScc(const Graph& graph, unsigned threadCount = defaultThreadCount());
+[[nodiscard]] Components parallelScc(const Graph& graph,
+                                     unsigned threadCount = defaultThreadCount());
 
 /**
  * A hybrid algorithm for graphs with a giant component, where parallelScc
@@ -40,7 +41,7 @@ Components parallelScc(const Graph& graph, unsigned threadCount = defaultThreadC
  * threads synchronize once per level; small frontiers, as on long paths, are
  * advanced by one thread. Throws std::invalid_argument if threadCount is 0.
  */
-Components hybridScc(const Graph& graph, unsigned threadCount = defaultThreadCount());
+[[nodiscard]] Components hybridScc(const Graph& graph, unsigned threadCount = defaultThreadCount());
 
 } // namespace ptarjan
 

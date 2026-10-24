@@ -1,19 +1,9 @@
-//
-//  parallel_tarjan.hpp
-//  Tarjan
-//
-//  Created by Alex Zabrodskiy on 4/30/17.
-//  Copyright © 2017 Alex Zabrodskiy. All rights reserved.
-//
-
 #ifndef PTARJAN_PARALLEL_TARJAN_HPP
 #define PTARJAN_PARALLEL_TARJAN_HPP
 
 #include <atomic>
 #include <cstdint>
-#include <exception>
 #include <memory>
-#include <mutex>
 #include <vector>
 
 #include "cell.hpp"
@@ -23,26 +13,20 @@
 #include "root_queue.hpp"
 #include "search.hpp"
 #include "suspension_manager.hpp"
+#include "threading.hpp"
 #include "worker.hpp"
 
 namespace ptarjan::detail {
 
-//Runs the parallel algorithm once. The pending and root queues are parameters so
-//that tests can substitute instrumented or ThreadSanitizer-friendly versions
+// Runs the parallel algorithm once. The pending and root queues are parameters so
+// that tests can substitute instrumented or ThreadSanitizer-friendly versions.
 class ParallelTarjan {
-
-private:
-    //Constants
-    const unsigned NUM_THREADS;
-
-    //Data structures
+    const unsigned threadCount;
     const Graph& graph;
     std::unique_ptr<Cell[]> cells;
-    SuspensionManager susMgr;
+    SuspensionManager suspensions;
     PendingQueue& pending;
-    RootQueue& cellQueue;
-
-    //Member Variables
+    RootQueue& roots;
 
     /* Termination protocol. activeSearches counts the searches that are running
      * or waiting in Pending to be resumed, plus the workers holding a block of
@@ -56,46 +40,39 @@ private:
      */
     std::atomic<std::int64_t> activeSearches{0};
 
-    //Set if a worker throws (in practice, std::bad_alloc). The other workers then
-    //stop taking searches, and run() rethrows the first exception
-    std::atomic<bool> aborted{false};
-    std::mutex failureMutex;
-    std::exception_ptr failure;
-
-    void fail(std::exception_ptr error);
+    // If a worker throws, the others stop taking searches and run() rethrows.
+    FirstFailure failure;
 
 public:
-    ParallelTarjan(const Graph& _graph, unsigned num_threads, PendingQueue& _pending,
-                   RootQueue& _queue);
+    ParallelTarjan(const Graph& input, unsigned workers, PendingQueue& pendingQueue,
+                   RootQueue& rootQueue);
 
-    Components run();
+    [[nodiscard]] Components run();
 
-    //Before run() starts: treats the vertex as already assigned to a component. The caller
-    //must exclude whole components only, and order these writes before run(), for
-    //example by joining the threads that make them
+    // Before run() starts: treats the vertex as already assigned to a component. The caller
+    // must exclude whole components only, and order these writes before run(), for
+    // example by joining the threads that make them.
     void excludeVertex(Vertex vertex) {
         cells[vertex].status.store(CellStatus::completeCell(), std::memory_order_relaxed);
     }
 
     Search* getSearch(Worker& worker);
 
-    //Called by a worker after execute() returns, whether its search finished or suspended
+    // Called by a worker after execute() returns, whether its search finished or suspended.
     void searchStopped() { activeSearches.fetch_sub(1); }
 
-    bool suspend(Worker& worker, Search* const S, Cell* conflictCell) {
-        return susMgr.suspend(worker, S, conflictCell);
+    [[nodiscard]] bool suspend(Worker& worker, Search* const search, Cell* conflictCell) {
+        return suspensions.suspend(worker, search, conflictCell);
     }
 
     void resumeAllBlockedOn(unsigned worker, Cell* const completeCell,
                             std::vector<Search*>& toResume) {
-        SearchList* const suspendedList(completeCell->getBlockedList());
-
-        if (suspendedList && suspendedList->size()) {
+        SearchList* const blocked = completeCell->blockedList();
+        if (blocked && blocked->size()) {
             toResume.clear();
-            susMgr.bulkUnsuspend(suspendedList, completeCell, toResume);
-
+            suspensions.bulkUnsuspend(blocked, completeCell, toResume);
             if (!toResume.empty()) {
-                //Count the searches before they become visible to other workers
+                // Count the searches before they become visible to other workers.
                 activeSearches.fetch_add(static_cast<std::int64_t>(toResume.size()));
                 pending.addPending(worker, toResume);
             }

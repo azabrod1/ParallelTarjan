@@ -1,138 +1,89 @@
-//
-//  search.cpp
-//  Tarjan
-//
-//  Created by Alex Zabrodskiy on 4/26/17.
-//  Copyright © 2017 Alex Zabrodskiy. All rights reserved.
-//
-
 #include "search.hpp"
+
+#include <algorithm>
 
 #include "worker.hpp"
 
-#include <algorithm> // std::min
-
 namespace ptarjan::detail {
 
-/**
- Pre:  The cell must be owned by the thread
- Post: The cell is added to both the search's tarjan and control stack.
-       Additionally, the cell is given an index and we increment cellCount
- 
- @param newCell Pointer to the cell we are pushing to our stacks
- */
+// Pre: the search owns the cell. Puts it on both stacks with the next index.
 void Search::pushToStacks(Cell* newCell) {
     tarjanStack.push_back(newCell);
     controlStack.push_back(newCell);
     newCell->initIndex(cellCount++);
 }
 
-//When the search receives new cells as part of a transfer, the cellCount should be updated to reflect this
+// After a transfer the stack's top may have come from another search.
 void Search::refreshCellCount() {
     cellCount = tarjanStack.back()->index + 1;
 }
 
-/************* Methods for node transfer ***************/
+/*
+ Pre:     The searches S0, S1, ..., Sn form a blocking cycle, S0 --> S1 --> ... --> Sn,
+          and cells are being transferred from S0 .. Sn-1 to Sn to resolve it.
 
-/**
- Pre:    The searches S0,S1, S2, S3,...,Sn are in a blocking cycle such that
-         So --> S1 -->  S2 --> S3 -->...--> Sn
-         Cells are being transferred from S0 to Sn-1 to Sn to resolve the cycle
- 
- Inputs: src is one of the searches Si from S0 to Sn-1
-         dest is the search Sn that is recieving the transferred cell
-         conflict cell is the cell of src the search before src, S_{i-1} is blocked on and
-         corresponds to the cell Ci in the paper
- 
- Purpose: First, The function transfers cells from the tarjanStack of src to the tarjanStack of dest.
-          Cell transfer starts at the top of src's tarjanStack and proceeds until the following two conditons are met
-          a) The conflict cell is transferred to dest
-          b) The last cell transferred has rank no greater than the minimum rank of the cells transferred so far
- 
-          ...a) is important because we want to transfer the cell causing the conflict to dest so that the conflict is 
-          resolved. b) is important because we want to transfer all the cells in the same SCC as the conflict cell
-          otherwise dest and src will both have some cells in that SCC on their stack, and hence they will again collide
-          and form a cycle
- 
-          defining L to be the is the last cell we transferred from src's tarjanStack,
-          we transfer all the cells in src's control stack starting from its top and 
-          proceeding until we reach L. Note that L must be on src's controlStack. To see why, note that
-          L.index must equal L.rank otherwise it would be impossible for L to have index lower than 
-          any rank encountered so far since its own index will be less than its rank.
- 
- Post:    The relevant cells discussed above are tranferred to dest with their index and rank variables updated to
-          fit with their new stack. The search src is now blocked on the last cell transferred to dest
- 
- */
+ Inputs:  src is one of S0 .. Sn-1 and dest is Sn, which receives the cells.
+          conflictCell is the cell of src that the search before it in the cycle is
+          blocked on (Ci in the dissertation).
 
-/*Transfer cells from source to destination */
+ Purpose: Moves cells from the top of src's Tarjan stack to dest's until both
+          a) the conflict cell has been moved, and
+          b) the last cell moved has an index no greater than the smallest rank moved
+             so far.
+          a) resolves the conflict. b) moves every cell of src in the conflict cell's
+          component: otherwise src and dest would each keep part of that component,
+          collide again and form another cycle.
 
+          Calling L the last cell moved, the control stack's cells from its top down
+          to L move as well. L is on src's control stack: the loop stops at L with
+          L.index <= minRank <= L.rank <= L.index, so L's index equals its rank, and a
+          cell that left the control stack with equal index and rank would already
+          have been popped as the root of a component.
+
+ Post:    The moved cells carry indices and ranks in dest's numbering. src is now
+          blocked on L, or has no cells left.
+*/
 void Search::transferCells(Worker& worker, Search* const src, Search* const dest,
                            Cell* const conflictCell) {
-
     TarjanStack& srcTarjanStack = src->tarjanStack;
     ControlStack& srcControlStack = src->controlStack;
 
-    //We use a reverse iterator since we are starting from the top of the stack
     auto reverseIt = srcTarjanStack.rbegin();
-
     Cell* next = *reverseIt;
-    Vertex minRank(next->rank);
-    bool reachedCC(next == conflictCell);
+    Vertex minRank = next->rank;
+    bool reachedConflict = next == conflictCell;
 
-    /* Remove cells from src's tarjanStack, starting from the top and proceeding until
-     a) The conflict cell is transferred to dest
-     b) The latest cell transferred has rank no greater than the minimum rank of the cells transferred so far
-     */
-
-    while (!reachedCC || next->index > minRank) {
-        next = *(++reverseIt); //Increment iterator and get the next element
+    while (!reachedConflict || next->index > minRank) {
+        next = *(++reverseIt);
         minRank = std::min(minRank, next->rank);
         if (next == conflictCell)
-            reachedCC = true;
+            reachedConflict = true;
     }
 
-    //Transfer the relevent cells from src's tarjan stack to dest's tarjan stack
+    Cell* const last = next;
+    const Vertex delta = dest->cellCount - last->index;
 
-    Cell* const last(next);
-
-    Vertex delta(dest->cellCount - last->index);
-
-    //Carry out the transfer
-    dest->tarjanStack.insert(dest->tarjanStack.end(), (reverseIt + 1).base(), srcTarjanStack.end());
-
-    //adjust the index and ranks and status of the transferred cells
-    //to be compatible with the cell's new tarjanStack
-    for (auto it = (reverseIt + 1).base(); it != srcTarjanStack.end(); ++it)
+    const auto moved = (reverseIt + 1).base();
+    dest->tarjanStack.insert(dest->tarjanStack.end(), moved, srcTarjanStack.end());
+    for (auto it = moved; it != srcTarjanStack.end(); ++it)
         (*it)->transfer(delta, dest);
-
-    //Erase the cells transferred to dest from src's tarjan stack
-    //Using stl functions to accomplish this may be faster than a loop hence we use the
-    //erase() function
-    srcTarjanStack.erase((reverseIt + 1).base(), srcTarjanStack.end());
+    srcTarjanStack.erase(moved, srcTarjanStack.end());
 
     auto rit = srcControlStack.rbegin();
-
     while (*rit != last)
         ++rit;
-
-    //Transfer cells from src control stack to destination control stack
-    //starting from the controlStack's top and proceeding to the last cell transferred
-
     dest->controlStack.insert(dest->controlStack.end(), (rit + 1).base(), srcControlStack.end());
-
     srcControlStack.erase((rit + 1).base(), srcControlStack.end());
 
-    //transfered to dest
-    //Src now blocks on the deepest cell in the tarjan stack that we transfered to dest
+    // src now waits for the deepest of its former cells.
     if (!srcTarjanStack.empty()) {
         src->suspendOn(last);
         worker.blockedListOf(last)->push_back(src);
         src->refreshCellCount();
-    } else
-        src->removeCellBlockedOn();
+    } else {
+        src->clearBlockedOn();
+    }
 
-    //CellCount of dest must be adjusted as well since we added more cells
     dest->refreshCellCount();
 }
 
