@@ -48,9 +48,9 @@ enum class Claim { CLAIMED, OCCUPIED, COMPLETE };
 class Cell {
     // The searches blocked on the cell; allocated on first use.
     std::atomic<SearchList*> blockedSearches{nullptr};
+    std::atomic<Search*> status{CellStatus::NEW_CELL};
 
 public:
-    std::atomic<Search*> status{CellStatus::NEW_CELL};
     Vertex index{0};
     Vertex rank{0};
 
@@ -69,8 +69,16 @@ public:
 
     bool isNew() const { return status == CellStatus::NEW_CELL; }
 
+    // NEW_CELL, completeCell() or the owning search, for a caller that compares the result
+    // with each of them.
+    Search* loadStatus(std::memory_order order) const { return status.load(order); }
+
     // Owner only, once every successor has been explored: retires the cell.
     void markComplete() { status = CellStatus::completeCell(); }
+
+    // Before any search starts: the vertex's component is already known. The caller
+    // orders the store before the searches, for example by joining the thread that made it.
+    void markExcluded() { status.store(CellStatus::completeCell(), std::memory_order_relaxed); }
 
     // The blocked list, or nullptr if no search has ever blocked on the cell.
     SearchList* blockedList() const { return blockedSearches.load(); }

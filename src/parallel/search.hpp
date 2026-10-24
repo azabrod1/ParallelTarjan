@@ -12,15 +12,22 @@ namespace ptarjan::detail {
 using TarjanStack = std::vector<Cell*>;
 using ControlStack = std::vector<Cell*>;
 
-class Worker;
-
+/**
+ * One depth-first search of the parallel algorithm.
+ *
+ * The stacks and cellCount belong to the worker running the search, or to the thread
+ * resolving a blocking cycle through it, and pass to the next one through the
+ * sequentially consistent operations that suspend and resume the search. The blocking
+ * cell and age are read by other threads walking blocking paths.
+ */
 class Search {
     std::atomic<Cell*> cellBlockedOn{nullptr};
-    TarjanStack tarjanStack;
-    ControlStack controlStack; // Simulates the call stack to avoid recursion
-    Vertex cellCount{0};
 
 public:
+    TarjanStack tarjanStack;
+    ControlStack controlStack; // Simulates the call stack to avoid recursion
+    Vertex cellCount{0};       // The index the next cell pushed receives
+
     // Even while the search is idle; odd while a thread resolves a blocking cycle through it.
     // Grows by 2 each time the Search object is reused, so a stale view of it can be detected.
     std::atomic<std::uint32_t> age{0};
@@ -29,9 +36,21 @@ public:
     Search(const Search&) = delete;
     Search& operator=(const Search&) = delete;
 
-    void pushToStacks(Cell* cell);
+    // Pre: the search owns the cell. Puts it on both stacks with the next index.
+    void push(Cell* cell);
 
-    TarjanStack& getTS() { return tarjanStack; }
+    bool done() const { return controlStack.empty(); }
+
+    // After a transfer the stack's top may have come from another search.
+    void refreshCellCount() { cellCount = tarjanStack.back()->index + 1; }
+
+    // Prepares the object for reuse; the new age tells it apart from its earlier life.
+    void reset() {
+        cellCount = 0;
+        age += 2;
+    }
+
+    Cell* blockedOn() const { return cellBlockedOn; }
 
     void suspendOn(Cell* const cell) { cellBlockedOn = cell; }
 
@@ -43,29 +62,6 @@ public:
 
     // Only for a search that no other thread can resume meanwhile.
     void clearBlockedOn() { cellBlockedOn = nullptr; }
-
-    Cell* blockedOn() const { return cellBlockedOn; }
-
-    Cell* tarjanStackTop() const { return tarjanStack.back(); }
-
-    Cell* controlStackTop() const { return controlStack.back(); }
-
-    void controlStackPop() { controlStack.pop_back(); }
-
-    void tarjanStackPop() { tarjanStack.pop_back(); }
-
-    // Prepares the object for reuse; the new age tells it apart from its earlier life.
-    void reset() {
-        cellCount = 0;
-        age += 2;
-    }
-
-    void refreshCellCount();
-
-    bool done() const { return controlStack.empty(); }
-
-    static void transferCells(Worker& worker, Search* const src, Search* const dest,
-                              Cell* const conflictCell);
 };
 
 } // namespace ptarjan::detail

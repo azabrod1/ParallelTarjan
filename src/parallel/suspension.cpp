@@ -1,9 +1,109 @@
-#include "suspension_manager.hpp"
+#include "suspension.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <functional>
 
+#include "worker.hpp"
+
 namespace ptarjan::detail {
+
+namespace {
+
+/*
+ Pre:     The searches S0, S1, ..., Sn form a blocking cycle, S0 --> S1 --> ... --> Sn,
+          and cells are being transferred from S0 .. Sn-1 to Sn to resolve it.
+
+ Inputs:  src is one of S0 .. Sn-1 and dest is Sn, which receives the cells.
+          conflictCell is the cell of src that the search before it in the cycle is
+          blocked on (Ci in the dissertation).
+
+ Purpose: Moves cells from the top of src's Tarjan stack to dest's until both
+          a) the conflict cell has been moved, and
+          b) the last cell moved has an index no greater than the smallest rank moved
+             so far.
+          a) resolves the conflict. b) moves every cell of src in the conflict cell's
+          component: otherwise src and dest would each keep part of that component,
+          collide again and form another cycle.
+
+          Calling L the last cell moved, the control stack's cells from its top down
+          to L move as well. L is on src's control stack: the loop stops at L with
+          L.index <= minRank <= L.rank <= L.index, so L's index equals its rank, and a
+          cell that left the control stack with equal index and rank would already
+          have been popped as the root of a component.
+
+ Post:    The moved cells carry indices and ranks in dest's numbering. src is now
+          blocked on L, or has no cells left.
+*/
+void transferCells(Worker& worker, Search* const src, Search* const dest,
+                   Cell* const conflictCell) {
+    TarjanStack& srcTarjanStack = src->tarjanStack;
+    ControlStack& srcControlStack = src->controlStack;
+
+    auto reverseIt = srcTarjanStack.rbegin();
+    Cell* next = *reverseIt;
+    Vertex minRank = next->rank;
+    bool reachedConflict = next == conflictCell;
+
+    while (!reachedConflict || next->index > minRank) {
+        next = *(++reverseIt);
+        minRank = std::min(minRank, next->rank);
+        if (next == conflictCell)
+            reachedConflict = true;
+    }
+
+    Cell* const last = next;
+    const Vertex delta = dest->cellCount - last->index;
+
+    const auto moved = (reverseIt + 1).base();
+    dest->tarjanStack.insert(dest->tarjanStack.end(), moved, srcTarjanStack.end());
+    for (auto it = moved; it != srcTarjanStack.end(); ++it)
+        (*it)->transfer(delta, dest);
+    srcTarjanStack.erase(moved, srcTarjanStack.end());
+
+    auto rit = srcControlStack.rbegin();
+    while (*rit != last)
+        ++rit;
+    dest->controlStack.insert(dest->controlStack.end(), (rit + 1).base(), srcControlStack.end());
+    srcControlStack.erase((rit + 1).base(), srcControlStack.end());
+
+    // src now waits for the deepest of its former cells.
+    if (!srcTarjanStack.empty()) {
+        src->suspendOn(last);
+        worker.blockedListOf(last)->push_back(src);
+        src->refreshCellCount();
+    } else {
+        src->clearBlockedOn();
+    }
+
+    dest->refreshCellCount();
+}
+
+/*
+ Inputs:  S is the confirmed cycle S0 -> S1 -> ... -> Sn from suspend(), and C[i] is
+          the cell of S[i] that the search before it is blocked on (Sn waits on C0).
+
+ Purpose: The searches of a blocking cycle all hold cells of one component, the
+          conflict component, and a cell becomes complete only when a single search
+          holds its whole component. Moving the conflict component's cells to Sn ends
+          the cycle; transferCells explains which cells that takes.
+
+ Post:    The cells of S0 .. Sn-1 known to be in the conflict component belong to Sn.
+          Each of S0 .. Sn-1 is blocked on the last cell it gave up. The top of Sn's
+          control stack has its rank lowered to cover the transferred cells.
+*/
+void resolveCycle(Worker& worker, const std::vector<Search*>& S, const std::vector<Cell*>& C) {
+    Search* const Sn = S.back();
+
+    for (std::size_t i = 0; i + 1 < S.size(); ++i)
+        transferCells(worker, S[i], Sn, C[i]);
+
+    // The transferred cells and Cn are in one component: the new top of Sn's stack takes
+    // the index of the cell of Sn that Sn-1 was blocked on as its rank.
+    Sn->controlStack.back()->promote(C.back()->index);
+}
+
+} // namespace
 
 /*
  Pre:     Sn reached conflictCell, which another search holds, and Sn is not blocked
@@ -38,13 +138,13 @@ namespace ptarjan::detail {
           was blocked on and continues. Searches of the cycle left with no cells are
           reclaimed for reuse.
 
- Returns: SUSPEND if Sn is suspended, RESUME if it can continue at once.
+ Returns: WAIT if Sn is suspended, CONTINUE if it can continue at once.
 
  Note: the dissertation version also recorded the age of each cell Ci, because cells were
  recycled to represent other vertices. Every vertex now has its own cell for the whole
  run, so a cell cannot change identity between the two walks.
 */
-bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const conflictCell) {
+AfterSuspend suspend(Worker& worker, Search* const Sn, Cell* const conflictCell) {
     const std::uint32_t SnAge = Sn->age;
 
     worker.blockedListOf(conflictCell)->push_back(Sn);
@@ -55,13 +155,12 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const co
     // if the CAS fails, the completing thread has queued Sn and another worker may already
     // be running it, so this one must not.
     if (conflictCell->isComplete())
-        return Sn->tryClearBlockedOn(conflictCell) ? RESUME : SUSPEND;
+        return Sn->tryClearBlockedOn(conflictCell) ? AfterSuspend::CONTINUE : AfterSuspend::WAIT;
 
     // Reused buffers, so that suspending does not allocate.
-    worker.cleanPaths();
-    std::vector<Search*>& S = worker.S;
-    std::vector<Cell*>& C = worker.C;
-    std::vector<std::uint32_t>& L = worker.L;
+    BlockingPath& path = worker.blockingPath();
+    path.clear();
+    auto& [S, C, L] = path;
 
     // First walk.
     Search* Si = Sn;
@@ -78,20 +177,20 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const co
     do {
         Ci = Si->blockedOn();
         if (!Ci)
-            return SUSPEND;
+            return AfterSuspend::WAIT;
 
         Si = Ci->owner();
         if (!Si)
-            return SUSPEND;
+            return AfterSuspend::WAIT;
 
         // An odd age means a thread is resolving a cycle through Si.
         Li = Si->age;
         if (Li & 1U)
-            return SUSPEND;
+            return AfterSuspend::WAIT;
 
         // Back at a search we already passed without meeting Sn: Sn is not on a cycle.
         if (Si == checkpoint)
-            return SUSPEND;
+            return AfterSuspend::WAIT;
 
         C.push_back(Ci);
         S.push_back(Si);
@@ -113,14 +212,14 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const co
 
         // The age must not have changed since the first walk read Si's blocking cell.
         if (Si->age != L[(i + pathSize - 1) % pathSize])
-            return SUSPEND;
+            return AfterSuspend::WAIT;
 
         if (Ci != C[i])
-            return SUSPEND;
+            return AfterSuspend::WAIT;
 
         Si = Ci->owner(); // nullptr if Ci is complete
         if (Si != S[i])
-            return SUSPEND;
+            return AfterSuspend::WAIT;
 
         // std::less supplies a total order even for separately allocated
         // searches; built-in relational pointer comparison does not.
@@ -131,16 +230,16 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const co
     // If Sn suspended on a different cell, or finished and was reused, a later call
     // to suspend() handles any cycle it is on.
     if (Sn->blockedOn() != conflictCell || SnAge != L[pathSize - 1])
-        return SUSPEND;
+        return AfterSuspend::WAIT;
 
     // The cycle is confirmed. Only the thread whose CAS makes S[minPtr]'s age odd resolves it.
     if (!S[minPtr]->age.compare_exchange_strong(L[minPtr], L[minPtr] + 1))
-        return SUSPEND;
+        return AfterSuspend::WAIT;
 
     // Sn stops waiting before the transfer so that no walk during it sees a false cycle.
     Sn->clearBlockedOn();
 
-    runCellTransfer(worker, S, C);
+    resolveCycle(worker, S, C);
 
     ++S[minPtr]->age; // Even again: the resolution is over
 
@@ -148,32 +247,7 @@ bool SuspensionManager::suspend(Worker& worker, Search* const Sn, Cell* const co
         if (search->done())
             worker.reclaim(search);
 
-    return RESUME;
-}
-
-/*
- Inputs:  S is the confirmed cycle S0 -> S1 -> ... -> Sn from suspend(), and C[i] is
-          the cell of S[i] that the search before it is blocked on (Sn waits on C0).
-
- Purpose: The searches of a blocking cycle all hold cells of one component, the
-          conflict component, and a cell becomes complete only when a single search
-          holds its whole component. Moving the conflict component's cells to Sn ends
-          the cycle; Search::transferCells explains which cells that takes.
-
- Post:    The cells of S0 .. Sn-1 known to be in the conflict component belong to Sn.
-          Each of S0 .. Sn-1 is blocked on the last cell it gave up. The top of Sn's
-          control stack has its rank lowered to cover the transferred cells.
-*/
-void SuspensionManager::runCellTransfer(Worker& worker, const std::vector<Search*>& S,
-                                        const std::vector<Cell*>& C) {
-    Search* const Sn = S.back();
-
-    for (std::size_t i = 0; i + 1 < S.size(); ++i)
-        Search::transferCells(worker, S[i], Sn, C[i]);
-
-    // The transferred cells and Cn are in one component: the new top of Sn's stack takes
-    // the index of the cell of Sn that Sn-1 was blocked on as its rank.
-    Sn->controlStackTop()->promote(C.back()->index);
+    return AfterSuspend::CONTINUE;
 }
 
 /*
@@ -183,29 +257,13 @@ void SuspensionManager::runCellTransfer(Worker& worker, const std::vector<Search
  Each search is taken only if a CAS clears completeCell as its blocking cell, so a
  search that has moved on is never resumed by mistake.
 
- Most cells have only a few searches blocked on them, so the list's first buffer is read
- directly; longer lists need the iterator.
 */
-void SuspensionManager::bulkUnsuspend(const SearchList* const blockedList, Cell* const completeCell,
-                                      std::vector<Search*>& toResume) {
-    Search* search = nullptr;
-    const std::size_t size = blockedList->size();
-
-    if (blockedList->isSmallList(size)) {
-        const std::atomic<Search*>* const suspendedSearches = blockedList->getSmallBuffer();
-        for (std::size_t e = 0; e < size; ++e) {
-            search = suspendedSearches[e].load();
-            if (search && search->tryClearBlockedOn(completeCell))
-                toResume.push_back(search);
-        }
-    } else {
-        auto suspendedListIt = blockedList->getIt(size);
-        while (suspendedListIt.increment()) {
-            search = suspendedListIt.getNext();
-            if (search && search->tryClearBlockedOn(completeCell))
-                toResume.push_back(search);
-        }
-    }
+void collectResumable(const SearchList& blocked, Cell* const completeCell,
+                      std::vector<Search*>& toResume) {
+    blocked.forEach([&](Search* const search) {
+        if (search->tryClearBlockedOn(completeCell))
+            toResume.push_back(search);
+    });
 }
 
 } // namespace ptarjan::detail

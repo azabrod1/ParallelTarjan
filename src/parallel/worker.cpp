@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "parallel_tarjan.hpp"
+#include "suspension.hpp"
 
 namespace ptarjan::detail {
 
@@ -21,7 +22,7 @@ void Worker::operator()() {
 
 void Worker::execute(Search* const search) {
     while (!search->done()) {
-        Cell* const curr = search->controlStackTop();
+        Cell* const curr = search->controlStack.back();
         const Vertex vertex = vertexOf(curr);
 
         if (curr->explored != offsets[vertex + 1] - offsets[vertex]) {
@@ -29,7 +30,7 @@ void Worker::execute(Search* const search) {
 
             // One load settles the common cases. claim() and suspend() check again, the
             // latter with the sequentially consistent ordering the suspension protocol needs.
-            Search* const owner = child->status.load(std::memory_order_acquire);
+            Search* const owner = child->loadStatus(std::memory_order_acquire);
 
             if (owner == CellStatus::completeCell())
                 continue;
@@ -42,18 +43,19 @@ void Worker::execute(Search* const search) {
             // The child may have changed state since the load, so claim() decides.
             const Claim attempt = child->claim(search);
             if (attempt == Claim::CLAIMED)
-                search->pushToStacks(child);
-            else if (attempt == Claim::OCCUPIED && scheduler.suspend(*this, search, child))
+                search->push(child);
+            else if (attempt == Claim::OCCUPIED &&
+                     suspend(*this, search, child) == AfterSuspend::WAIT)
                 return;
         } else {
             // Every successor explored: backtrack.
-            search->controlStackPop();
+            search->controlStack.pop_back();
 
             if (!search->done())
-                search->controlStackTop()->promote(curr->rank);
+                search->controlStack.back()->promote(curr->rank);
 
             if (curr->index == curr->rank) {
-                if (curr == search->tarjanStackTop())
+                if (curr == search->tarjanStack.back())
                     buildSingletonSCC(search, curr);
                 else
                     buildSCC(search, curr);
@@ -99,7 +101,7 @@ Cell* Worker::nextSuccessor(Cell* const curr, Search* const search) {
 }
 
 void Worker::buildSCC(Search* const search, Cell* const head) {
-    TarjanStack& tarjanStack = search->getTS();
+    TarjanStack& tarjanStack = search->tarjanStack;
 
     tarjanStack.back()->markComplete();
     auto rit = tarjanStack.rbegin();
@@ -117,7 +119,7 @@ void Worker::buildSCC(Search* const search, Cell* const head) {
 }
 
 void Worker::buildSingletonSCC(Search* const search, Cell* const cell) {
-    search->tarjanStackPop();
+    search->tarjanStack.pop_back();
     cell->markComplete();
     scheduler.resumeAllBlockedOn(workerId, cell, toResume);
     found.addSingleton(vertexOf(cell));

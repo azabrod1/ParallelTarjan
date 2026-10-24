@@ -60,7 +60,7 @@ add_library(ptarjan
     src/sequential_tarjan.cpp
     src/parallel/parallel_tarjan.cpp
     src/parallel/search.cpp
-    src/parallel/suspension_manager.cpp
+    src/parallel/suspension.cpp
     src/parallel/worker.cpp
 )
 add_library(ptarjan::ptarjan ALIAS ptarjan)

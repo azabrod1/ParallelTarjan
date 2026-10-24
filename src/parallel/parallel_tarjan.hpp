@@ -12,7 +12,7 @@
 #include "ptarjan/graph.hpp"
 #include "root_queue.hpp"
 #include "search.hpp"
-#include "suspension_manager.hpp"
+#include "suspension.hpp"
 #include "threading.hpp"
 #include "worker.hpp"
 
@@ -24,7 +24,6 @@ class ParallelTarjan {
     const unsigned threadCount;
     const Graph& graph;
     std::unique_ptr<Cell[]> cells;
-    SuspensionManager suspensions;
     PendingQueue& pending;
     RootQueue& roots;
 
@@ -52,25 +51,21 @@ public:
     // Before run() starts: treats the vertex as already assigned to a component. The caller
     // must exclude whole components only, and order these writes before run(), for
     // example by joining the threads that make them.
-    void excludeVertex(Vertex vertex) {
-        cells[vertex].status.store(CellStatus::completeCell(), std::memory_order_relaxed);
-    }
+    void excludeVertex(Vertex vertex) { cells[vertex].markExcluded(); }
 
     Search* getSearch(Worker& worker);
 
     // Called by a worker after execute() returns, whether its search finished or suspended.
     void searchStopped() { activeSearches.fetch_sub(1); }
 
-    [[nodiscard]] bool suspend(Worker& worker, Search* const search, Cell* conflictCell) {
-        return suspensions.suspend(worker, search, conflictCell);
-    }
-
+    // Queues the searches blocked on a cell that has just become complete. Most cells have
+    // no blocked list, so that case is settled here, inline.
     void resumeAllBlockedOn(unsigned worker, Cell* const completeCell,
                             std::vector<Search*>& toResume) {
         SearchList* const blocked = completeCell->blockedList();
         if (blocked && blocked->size()) {
             toResume.clear();
-            suspensions.bulkUnsuspend(blocked, completeCell, toResume);
+            collectResumable(*blocked, completeCell, toResume);
             if (!toResume.empty()) {
                 // Count the searches before they become visible to other workers.
                 activeSearches.fetch_add(static_cast<std::int64_t>(toResume.size()));

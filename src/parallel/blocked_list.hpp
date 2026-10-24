@@ -1,6 +1,7 @@
 #ifndef PTARJAN_BLOCKED_LIST_HPP
 #define PTARJAN_BLOCKED_LIST_HPP
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -8,9 +9,6 @@
 #include <exception>
 
 namespace ptarjan::detail {
-
-template <class S, unsigned P = 3, unsigned N_BUFS = 11>
-class BlockedListIt;
 
 /*
  A lock-free, append-only list of the searches blocked on one cell.
@@ -26,11 +24,10 @@ class BlockedListIt;
  entries reserved, and findBuffer() maps the index to a buffer using the SUMS table
  computed at compile time. A reserved entry that is not yet published reads as null.
 
- When a cell becomes complete, SuspensionManager::bulkUnsuspend reads the entries: from
- firstBuffer directly while head < BASE, through BlockedListIt otherwise.
+ When a cell becomes complete, collectResumable() reads the entries with forEach().
 
  There is no delete. A search that stops waiting on the cell stays in the list, and
- bulkUnsuspend resumes only the searches still blocked on the cell.
+ collectResumable() resumes only the searches still blocked on the cell.
 
  N_BUFS limits the number of buffers. With the defaults the list holds more than 2^32
  entries, and each entry is a distinct suspension, so it cannot fill: a search never
@@ -41,10 +38,6 @@ class BlockedListIt;
 */
 template <class S, unsigned P = 3, unsigned N_BUFS = 11>
 class BlockedList {
-
-    friend class BlockedListIt<S, P, N_BUFS>;
-
-private:
     using Buffer = std::atomic<S>*;
 
     static constexpr std::size_t BASE = std::size_t{1} << P; // The size of firstBuffer
@@ -141,57 +134,27 @@ public:
 
     std::size_t size() const { return head.load(); }
 
-    // Whether every entry is in firstBuffer, which can be read without the iterator.
-    static bool isSmallList(const std::size_t size) { return size < BASE; }
-
-    const std::atomic<S>* getSmallBuffer() const { return firstBuffer; }
-
-    // An iterator over the first size entries.
-    BlockedListIt<S, P, N_BUFS> getIt(const std::size_t size) const {
-        return BlockedListIt<S, P, N_BUFS>(*this, size);
-    }
-};
-
-// Iterates over a BlockedList with more than 2^P entries. Entries that are reserved but
-// not yet published read as null.
-template <class S, unsigned P, unsigned N_BUFS>
-class BlockedListIt {
-
-private:
-    using List = BlockedList<S, P, N_BUFS>;
-
-    // Both counters start one before the first entry; the first increment wraps them to 0.
-    std::size_t idx{SIZE_MAX}, ttl{SIZE_MAX};
-    unsigned arr{0};
-    const std::size_t last;
-    const List& list;
-
-public:
-    BlockedListIt(const List& _list, std::size_t _last) : last{_last}, list(_list) {}
-
-    S getNext() const {
-        if (!arr)
-            return list.firstBuffer[idx];
-
-        std::atomic<typename List::Buffer>* const extra = list.buffers.load();
+    // Calls visit(entry) for each of the entries reserved so far that has been published.
+    template <class Visit>
+    void forEach(Visit visit) const {
+        const std::size_t count = size();
+        for (std::size_t i = 0; i < std::min(count, BASE); ++i)
+            if (const S entry = firstBuffer[i].load())
+                visit(entry);
+        if (count <= BASE)
+            return;
+        const std::atomic<Buffer>* const extra = buffers.load();
         if (!extra)
-            return nullptr;
-        std::atomic<S>* const buffer = extra[arr].load();
-        return buffer ? buffer[idx].load() : nullptr;
-    }
-
-    // Advances to the next entry; false once the entries are used up.
-    bool increment() {
-        if (++ttl == last)
-            return false;
-
-        if (ttl == List::SUMS[arr]) {
-            ++arr;
-            idx = 0;
-        } else
-            ++idx;
-
-        return true;
+            return;
+        for (unsigned buffer = 1; buffer < N_BUFS && SUMS[buffer - 1] < count; ++buffer) {
+            const Buffer entries = extra[buffer].load();
+            if (!entries)
+                continue;
+            const std::size_t used = std::min(count, SUMS[buffer]) - SUMS[buffer - 1];
+            for (std::size_t i = 0; i < used; ++i)
+                if (const S entry = entries[i].load())
+                    visit(entry);
+        }
     }
 };
 

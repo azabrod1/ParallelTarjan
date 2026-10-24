@@ -21,15 +21,11 @@ void require(bool condition, const char* message) {
 
 std::unordered_set<int*> collectPublishedEntries(BlockedList<int*>& blockedList) {
     std::unordered_set<int*> observed;
-    const std::size_t snapshotSize = blockedList.size();
-    auto iterator = blockedList.getIt(snapshotSize);
-    while (iterator.increment()) {
-        int* entry = iterator.getNext();
-        // Reservations can precede publication during concurrent appends.
-        if (entry != nullptr) {
-            require(observed.insert(entry).second, "A published entry appeared twice");
-        }
-    }
+    // Reservations can precede publication during concurrent appends; forEach skips them.
+    blockedList.forEach([&](int* entry) {
+        require(entry != nullptr, "forEach visited an unpublished entry");
+        require(observed.insert(entry).second, "A published entry appeared twice");
+    });
     return observed;
 }
 
@@ -88,8 +84,8 @@ void checkGrowthBoundary(std::size_t entryCount) {
 int main() {
     try {
         // The default blocks hold 8, 64, 512, 4096, ... entries. Probe both
-        // sides of each cumulative boundary, including the iterator's exact
-        // switch from the embedded array to auxiliary buffers.
+        // sides of each cumulative boundary, including the exact switch from
+        // the embedded array to the extra buffers.
         const std::vector<std::size_t> entryCounts{7,   8,   9,   71,   72,   73,
                                                    583, 584, 585, 4679, 4680, 4681};
         for (const std::size_t entryCount : entryCounts) {

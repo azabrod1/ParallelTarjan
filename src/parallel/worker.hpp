@@ -16,6 +16,20 @@ namespace ptarjan::detail {
 
 class ParallelTarjan;
 
+// The blocking path that suspend() walks, in the dissertation's notation: searches S,
+// the cells C they are blocked on, and the searches' ages L.
+struct BlockingPath {
+    std::vector<Search*> searches;
+    std::vector<Cell*> cells;
+    std::vector<std::uint32_t> ages;
+
+    void clear() {
+        searches.clear();
+        cells.clear();
+        ages.clear();
+    }
+};
+
 // The state of one worker thread. Workers are created before any thread starts and
 // destroyed after every thread has been joined, so other workers may hold pointers
 // to the searches a worker allocated for the whole run.
@@ -40,6 +54,8 @@ class Worker {
     std::unique_ptr<SearchList> spareList;
 
     RootRange roots; // The block of vertices this worker is scanning for new roots
+
+    BlockingPath path; // Reused by every suspend(), so that suspending does not allocate
 
     void execute(Search* const search);
 
@@ -93,17 +109,7 @@ public:
 
     const ComponentsBuilder& components() const { return found; }
 
-    // Scratch space for the cycle detection in SuspensionManager::suspend, kept here so
-    // that suspending does not allocate.
-    std::vector<Search*> S;
-    std::vector<Cell*> C;
-    std::vector<std::uint32_t> L;
-
-    void cleanPaths() {
-        S.clear();
-        C.clear();
-        L.clear();
-    }
+    BlockingPath& blockingPath() { return path; }
 };
 
 } // namespace ptarjan::detail

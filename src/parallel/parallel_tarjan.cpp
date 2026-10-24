@@ -84,7 +84,7 @@ Search* ParallelTarjan::getSearch(Worker& worker) {
                 if (worker.holdsRoots())
                     activeSearches.fetch_add(1);
                 Search* const search = worker.spareSearch();
-                search->pushToStacks(root);
+                search->push(root);
                 worker.allocateSpareSearch();
                 return search;
             }

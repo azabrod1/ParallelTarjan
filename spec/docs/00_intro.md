@@ -12,6 +12,20 @@ Sources were read **only from git objects** (`git show <rev>:<path>`), never fro
 | `b9d4ba4` | `Tarjan Code/multiThreadedTarjan.{cpp,hpp}`, `worker.cpp`, `suspensionManager.cpp`, `blockedList.hpp`, `cell.h`, `search.hpp`, `stealingQueue.{hpp,cpp}`, `pending.hpp`, `docs/concurrency-audit.md` |
 | `2a280d9` | `src/parallel/{parallel_tarjan.cpp,parallel_tarjan.hpp,worker.hpp,worker.cpp,root_queue.hpp,pending_queue.hpp,cell.hpp,blocked_list.hpp,search.hpp,search.cpp,suspension_manager.cpp}` |
 
+The models quote the code at those revisions. Later refactoring renamed and moved some of it
+without changing the protocols:
+
+| At 2a280d9 | Now |
+| --- | --- |
+| `Cell::claimOrFail`, `getOwner`, `getBlockedList` | `Cell::tryClaim`, `owner`, `blockedList` |
+| `Search::getBlockingCell`, `removeCellBlockedOn`, `removeCellBlockedOnWithCompareExchange` | `Search::blockedOn`, `clearBlockedOn`, `tryClearBlockedOn` |
+| `Search::pushToStacks`, `setRoot` | `Search::push` |
+| `SuspensionManager::suspend`, `runCellTransfer`, `bulkUnsuspend` (`suspension_manager.cpp`) | `suspend`, `resolveCycle`, `collectResumable` (`suspension.cpp`) |
+| `Search::transferCells` (`search.cpp`) | `transferCells` (`suspension.cpp`) |
+| `BlockedListIt`, `isSmallList`, `getSmallBuffer` | `BlockedList::forEach` |
+| `Worker::S`, `C`, `L`, `getID` | `Worker::blockingPath()`, `id` |
+| `RootQueue::nextChunk`, the member `cellQueue` | `RootQueue::nextBlock`, the member `roots` |
+
 Tools: TLC 2.19 from `tla2tools.jar` v1.7.4, the latest stable release; v1.8.0 is still a
 pre-release. SHA-256 `936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88`.
 Java: Temurin 25 at `/usr/bin/java`.
